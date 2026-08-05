@@ -1,0 +1,87 @@
+[package]
+name = "server-monitoring-system"
+version = "1.0.0"
+edition = "2021"
+authors = ["Navadeep Palasa"]
+description = "Server Monitoring System - Rust Backend"
+
+# Two separate binaries: API server and Consumer
+[[bin]]
+name = "api-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "consumer"
+path = "src/consumer.rs"
+
+[lib]
+name = "server_monitoring"
+path = "src/lib.rs"
+
+[dependencies]
+# Web Framework
+actix-web = "4"
+actix-rt = "2"
+actix-cors = "0.7"
+
+# Async Runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# MongoDB
+mongodb = "3"
+bson = { version = "2", features = ["chrono-0_4"] }
+
+# PostgreSQL
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "migrate"] }
+
+# RabbitMQ
+lapin = "2"
+
+# JWT
+jsonwebtoken = "9"
+
+# Password Hashing
+bcrypt = "0.16"
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Date/Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Environment / Config
+dotenvy = "0.15"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+tracing-appender = "0.2"
+
+# Crypto (for API key generation)
+rand = "0.8"
+hex = "0.4"
+
+# Validation
+validator = { version = "0.18", features = ["derive"] }
+regex = "1"
+
+# HTTP client helpers
+cookie = "0.18"
+actix-http = "3"
+
+# Async utilities
+futures = "0.3"
+async-trait = "0.1"
+
+# Dashboard helpers
+tokio-stream = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
