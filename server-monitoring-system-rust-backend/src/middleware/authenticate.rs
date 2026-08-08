@@ -7,9 +7,9 @@ use futures::future::{ok, Ready, LocalBoxFuture};
 use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
 use std::rc::Rc;
 
-use crate::config::app_config::AppConfig;
-use crate::models::user::JwtClaims;
-use crate::utils::response_formatter::ResponseFormatter;
+use crate::config::settings::AppConfig;
+use crate::domain::user::JwtClaims;
+use crate::util::response::ResponseFormatter;
 
 /// Data extracted from JWT and attached to request extensions.
 #[derive(Debug, Clone)]

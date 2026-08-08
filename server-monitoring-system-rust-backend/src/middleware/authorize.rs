@@ -7,7 +7,7 @@ use futures::future::{ok, Ready, LocalBoxFuture};
 use std::rc::Rc;
 
 use crate::middleware::authenticate::AuthenticatedUser;
-use crate::utils::response_formatter::ResponseFormatter;
+use crate::util::response::ResponseFormatter;
 
 /// Authorize middleware factory - checks user role against allowed roles.
 /// Mirrors Node.js authorize.js middleware.

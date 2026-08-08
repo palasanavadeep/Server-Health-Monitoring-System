@@ -1,5 +1,6 @@
-pub mod app_config;
-pub mod logger;
-pub mod mongodb;
-pub mod postgres;
-pub mod rabbitmq;
+//! Infrastructure configuration and connection setup.
+
+pub mod database;
+pub mod messaging;
+pub mod settings;
+pub mod telemetry;

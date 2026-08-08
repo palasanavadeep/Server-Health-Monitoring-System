@@ -8,11 +8,11 @@ description = "Server Monitoring System - Rust Backend"
 # Two separate binaries: API server and Consumer
 [[bin]]
 name = "api-server"
-path = "src/main.rs"
+path = "src/bin/api_server.rs"
 
 [[bin]]
 name = "consumer"
-path = "src/consumer.rs"
+path = "src/bin/consumer.rs"
 
 [lib]
 name = "server_monitoring"
@@ -72,6 +72,9 @@ regex = "1"
 # HTTP client helpers
 cookie = "0.18"
 actix-http = "3"
+
+# Error handling
+thiserror = "2"
 
 # Async utilities
 futures = "0.3"

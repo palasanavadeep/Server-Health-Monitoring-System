@@ -1,10 +1,10 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 
 use crate::app_state::AppState;
-use crate::models::api_key::ApiKey;
-use crate::models::client::Client;
-use crate::utils::ip_utils::IpUtils;
-use crate::utils::response_formatter::ResponseFormatter;
+use crate::domain::api_key::ApiKey;
+use crate::domain::client::Client;
+use crate::util::ip::IpUtils;
+use crate::util::response::ResponseFormatter;
 
 /// Validated API key data attached to request extensions.
 #[derive(Debug, Clone)]
