@@ -1,10 +1,14 @@
 use chrono::Utc;
 use uuid::Uuid;
 
+use crate::domain::ingest::{HitEvent, HitEventData, IngestHitRequest, IngestResult, IngestStatus};
 use crate::error::app_error::AppError;
 use crate::messaging::producer::EventProducer;
 
 /// Ingest service — validates and publishes API hit events to the message queue.
+///
+/// Accepts `IngestHitRequest` (a typed struct) instead of `serde_json::Value`,
+/// eliminating runtime field-lookup overhead on the hot ingest path.
 pub struct IngestService {
     event_producer: EventProducer,
 }
@@ -14,63 +18,56 @@ impl IngestService {
         Self { event_producer }
     }
 
-    /// Ingest an API hit event. Validates, enriches, and publishes to the queue.
+    /// Ingest an API hit event.
+    ///
+    /// Validates fields, enriches with timestamp + event_id, and publishes to RabbitMQ.
+    /// Returns an `IngestResult` indicating whether the event was queued or rejected.
     pub async fn ingest_api_hit(
         &self,
-        hit_data: serde_json::Value,
-    ) -> Result<serde_json::Value, AppError> {
-        self.validate_hit_data(&hit_data)?;
+        req: IngestHitRequest,
+    ) -> Result<IngestResult, AppError> {
+        self.validate(&req)?;
 
         let event_id = Uuid::new_v4().to_string();
-        let timestamp = Utc::now().to_rfc3339();
+        let now = Utc::now();
 
-        let method = hit_data
-            .get("method")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_uppercase();
+        let envelope = HitEvent {
+            event_type: "API_HIT".to_string(),
+            data: HitEventData {
+                event_id: event_id.clone(),
+                timestamp: now,
+                service_name: req.service_name,
+                endpoint: req.endpoint,
+                method: req.method.to_uppercase(),
+                status_code: req.status_code,
+                latency_ms: req.latency_ms,
+                client_id: req.client_id,
+                api_key_id: req.api_key_id,
+                ip: req.ip.unwrap_or_else(|| "unknown".to_string()),
+                user_agent: req.user_agent.unwrap_or_default(),
+            },
+            published_at: now,
+            attempt: 1,
+        };
 
-        let status_code: i64 = hit_data
-            .get("statusCode")
-            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
-            .unwrap_or(0);
-
-        let latency_ms: f64 = hit_data
-            .get("latencyMs")
-            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
-            .unwrap_or(0.0);
-
-        let event = serde_json::json!({
-            "eventId": event_id,
-            "timestamp": timestamp,
-            "serviceName": hit_data.get("serviceName"),
-            "endpoint": hit_data.get("endpoint"),
-            "method": method,
-            "statusCode": status_code,
-            "latencyMs": latency_ms,
-            "clientId": hit_data.get("clientId"),
-            "apiKeyId": hit_data.get("apiKeyId"),
-            "ip": hit_data.get("ip").and_then(|v| v.as_str()).unwrap_or("unknown"),
-            "userAgent": hit_data.get("userAgent").and_then(|v| v.as_str()).unwrap_or(""),
-        });
-
-        match self.event_producer.publish_api_hit(event).await {
+        match self.event_producer.publish_api_hit(envelope).await {
             Ok(true) => {
                 tracing::info!(event_id = %event_id, "API hit ingested");
-                Ok(serde_json::json!({
-                    "eventId": event_id,
-                    "status": "queued",
-                    "timestamp": timestamp,
-                }))
+                Ok(IngestResult {
+                    event_id,
+                    status: IngestStatus::Queued,
+                    timestamp: now,
+                    reason: None,
+                })
             }
             Ok(false) => {
                 tracing::warn!(event_id = %event_id, "API hit rejected by circuit breaker");
-                Ok(serde_json::json!({
-                    "eventId": event_id,
-                    "status": "rejected",
-                    "reason": "service_unavailable",
-                    "timestamp": timestamp,
-                }))
+                Ok(IngestResult {
+                    event_id,
+                    status: IngestStatus::Rejected,
+                    timestamp: now,
+                    reason: Some("service_unavailable".to_string()),
+                })
             }
             Err(e) => {
                 tracing::error!(error = %e, "Error ingesting API hit");
@@ -79,67 +76,41 @@ impl IngestService {
         }
     }
 
-    /// Validate required fields and value ranges for hit data.
-    fn validate_hit_data(&self, hit_data: &serde_json::Value) -> Result<(), AppError> {
-        let required_fields = [
-            "serviceName", "endpoint", "method", "statusCode", "latencyMs", "clientId",
-        ];
-
-        let missing: Vec<&str> = required_fields
-            .iter()
-            .filter(|&&field| {
-                hit_data.get(field).is_none()
-                    || hit_data.get(field) == Some(&serde_json::Value::Null)
-                    || hit_data.get(field).and_then(|v| v.as_str()) == Some("")
-            })
-            .copied()
-            .collect();
-
-        if !missing.is_empty() {
-            return Err(AppError::bad_request(format!(
-                "Missing required fields: {}",
-                missing.join(",")
-            )));
+    /// Validate required fields and value ranges.
+    fn validate(&self, req: &IngestHitRequest) -> Result<(), AppError> {
+        if req.service_name.trim().is_empty() {
+            return Err(AppError::bad_request("serviceName is required"));
+        }
+        if req.endpoint.trim().is_empty() {
+            return Err(AppError::bad_request("endpoint is required"));
+        }
+        if req.client_id.trim().is_empty() {
+            return Err(AppError::bad_request("clientId is required"));
         }
 
         // Validate HTTP method
-        let valid_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
-        let method = hit_data
-            .get("method")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_uppercase();
-
-        if !valid_methods.contains(&method.as_str()) {
+        const VALID_METHODS: &[&str] =
+            &["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
+        if !VALID_METHODS.contains(&req.method.to_uppercase().as_str()) {
             return Err(AppError::bad_request(format!(
-                "Invalid HTTP methods: {} ",
-                method
+                "Invalid HTTP methods: {}",
+                req.method
             )));
         }
 
-        // Validate status code range
-        let status_code: i64 = hit_data
-            .get("statusCode")
-            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
-            .unwrap_or(-1);
-
-        if status_code < 100 || status_code > 599 {
+        // Validate status code range (100–599)
+        if req.status_code < 100 || req.status_code > 599 {
             return Err(AppError::bad_request(format!(
-                "Invalid Status code : {} ",
-                status_code
+                "Invalid Status code : {}",
+                req.status_code
             )));
         }
 
         // Validate latency is non-negative
-        let latency: f64 = hit_data
-            .get("latencyMs")
-            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
-            .unwrap_or(-1.0);
-
-        if latency < 0.0 {
+        if req.latency_ms < 0.0 {
             return Err(AppError::bad_request(format!(
-                "Invalid latency : {} ",
-                latency
+                "Invalid latency : {}",
+                req.latency_ms
             )));
         }
 

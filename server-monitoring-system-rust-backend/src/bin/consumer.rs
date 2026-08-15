@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use server_monitoring::config::database::{MongoConnection, create_pg_pool};
+use server_monitoring::config::database::{create_pg_pool, MongoConnection};
 use server_monitoring::config::messaging::RabbitMqConnection;
 use server_monitoring::config::settings::AppConfig;
 use server_monitoring::config::telemetry;
@@ -13,9 +13,10 @@ use server_monitoring::service::processor::ProcessorService;
 
 #[tokio::main]
 async fn main() {
-    // Load environment variables
+    // Load environment variables from .env file (no-op if file missing)
     dotenvy::dotenv().ok();
 
+    // Load and validate typed configuration — panics if required env vars are missing
     let config = AppConfig::from_env();
 
     // Initialize structured logging
@@ -23,12 +24,17 @@ async fn main() {
 
     tracing::info!("Starting Server Monitoring Consumer (Rust)");
 
-    // Startup retry loop (mirrors Node.js startConsumerWithRetry)
-    let startup_retry = RetryStrategy::new(5, 5000, 30_000, 0.3);
+    // Startup retry strategy — parameters driven by ConsumerConfig
+    let startup_retry = RetryStrategy::new(
+        config.consumer.startup_max_retries,
+        config.consumer.startup_base_delay_ms,
+        config.resilience.retry_max_delay_ms,
+        config.resilience.retry_jitter_factor,
+    );
     let mut attempt: u32 = 0;
 
     loop {
-        tracing::info!("Starting consumer (attempt {})", attempt + 1);
+        tracing::info!(attempt = attempt + 1, "Starting consumer");
 
         match start_consumer(&config).await {
             Ok(consumer) => {
@@ -42,8 +48,11 @@ async fn main() {
                 tracing::info!("Received shutdown signal, stopping gracefully...");
                 consumer.stop();
 
-                // Give time for in-flight messages to complete
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                // Allow in-flight messages to drain — duration from config
+                tokio::time::sleep(tokio::time::Duration::from_secs(
+                    config.consumer.graceful_shutdown_secs,
+                ))
+                .await;
                 break;
             }
             Err(e) => {
@@ -55,7 +64,10 @@ async fn main() {
                 );
 
                 if !startup_retry.should_retry(attempt) {
-                    tracing::error!("Max retries reached, exiting...");
+                    tracing::error!(
+                        max_retries = config.consumer.startup_max_retries,
+                        "Max retries reached, exiting"
+                    );
                     std::process::exit(1);
                 }
 
@@ -68,19 +80,19 @@ async fn main() {
 async fn start_consumer(
     config: &AppConfig,
 ) -> Result<EventConsumer, Box<dyn std::error::Error + Send + Sync>> {
-    // Connect to databases with retry
-    let max_retries = 5u32;
+    // Connect to databases with retry — max retries from ConsumerConfig
+    let max_retries = config.consumer.db_connect_max_retries;
     let mut retries = 0u32;
 
     let (db, pg_pool) = loop {
-        tracing::info!("Connecting to databases...");
+        tracing::info!(attempt = retries + 1, "Connecting to databases");
 
         let mongo_result = async {
             let mut conn = MongoConnection::new(config.mongo.clone());
             conn.connect()
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                    format!("{}", e).into()
+                    format!("MongoDB: {}", e).into()
                 })
         };
 
@@ -111,7 +123,9 @@ async fn start_consumer(
                     .into());
                 }
 
-                tokio::time::sleep(tokio::time::Duration::from_secs(5 * retries as u64)).await;
+                // Linearly growing backoff: base_delay_ms * retries
+                let delay_secs = (config.consumer.startup_base_delay_ms / 1_000) * retries as u64;
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
             }
         }
     };
@@ -130,13 +144,17 @@ async fn start_consumer(
     // Service layer
     let processor_service = Arc::new(ProcessorService::new(api_hit_repo, metrics_repo));
 
-    // Resilience primitives for the consumer
-    let circuit_breaker = Arc::new(CircuitBreaker::new(5, 30_000, 3));
+    // Resilience primitives — all parameters from config, no magic numbers
+    let circuit_breaker = Arc::new(CircuitBreaker::new(
+        config.resilience.cb_failure_threshold,
+        config.resilience.cb_cooldown_ms,
+        config.resilience.cb_half_open_attempts,
+    ));
     let retry_strategy = Arc::new(RetryStrategy::new(
         config.rabbitmq.retry_attempts,
         config.rabbitmq.retry_delay,
-        30_000,
-        0.3,
+        config.resilience.retry_max_delay_ms,
+        config.resilience.retry_jitter_factor,
     ));
 
     let consumer = EventConsumer::new(
@@ -145,6 +163,7 @@ async fn start_consumer(
         config.rabbitmq.queue.clone(),
         retry_strategy,
         circuit_breaker,
+        config.consumer.idempotency_cache_size,
     );
 
     consumer.start().await?;

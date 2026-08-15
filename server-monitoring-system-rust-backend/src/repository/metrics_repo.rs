@@ -1,12 +1,15 @@
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, Utc};
-use sqlx::PgPool;
+use chrono::{DateTime, Utc};
+use sqlx::postgres::PgPool;
 
+use crate::domain::metrics::{
+    ApiMetricsEntry, EndpointStat, OverallStats, TimeSeriesEntry,
+};
 use crate::error::app_error::AppError;
 
 const MAX_LIMIT: i64 = 1000;
 
-/// Metrics repository trait.
+/// Metrics repository trait — all methods return strongly-typed structs.
 #[async_trait]
 pub trait MetricsRepository: Send + Sync {
     async fn upsert_endpoint_metrics(
@@ -28,14 +31,14 @@ pub trait MetricsRepository: Send + Sync {
         client_id: Option<&str>,
         start_time: DateTime<Utc>,
         end_time: DateTime<Utc>,
-    ) -> Result<serde_json::Value, AppError>;
+    ) -> Result<OverallStats, AppError>;
 
     async fn get_top_endpoints(
         &self,
         client_id: Option<&str>,
         limit: i64,
         start_time: Option<DateTime<Utc>>,
-    ) -> Result<Vec<serde_json::Value>, AppError>;
+    ) -> Result<Vec<EndpointStat>, AppError>;
 
     async fn get_metrics(
         &self,
@@ -43,14 +46,14 @@ pub trait MetricsRepository: Send + Sync {
         start_time: DateTime<Utc>,
         end_time: DateTime<Utc>,
         limit: i64,
-    ) -> Result<Vec<serde_json::Value>, AppError>;
+    ) -> Result<Vec<TimeSeriesEntry>, AppError>;
 
     async fn get_client_apis_metrics(
         &self,
         client_id: &str,
         limit: i64,
         offset: i64,
-    ) -> Result<(Vec<serde_json::Value>, i64), AppError>;
+    ) -> Result<(Vec<ApiMetricsEntry>, i64), AppError>;
 }
 
 /// PostgreSQL implementation of `MetricsRepository`.
@@ -64,7 +67,9 @@ impl PgMetricsRepository {
     }
 }
 
-// SQLx row types (private implementation detail)
+// ── Private SQLx row types ────────────────────────────────────────────────────
+// These are internal to the impl and never cross the repository boundary.
+
 #[derive(sqlx::FromRow)]
 struct StatsRow {
     total_hits: i64,
@@ -94,7 +99,7 @@ struct TimeSeriesRow {
     avg_latency: f64,
     min_latency: f64,
     max_latency: f64,
-    time_bucket: NaiveDateTime,
+    time_bucket: chrono::NaiveDateTime,
 }
 
 #[derive(sqlx::FromRow)]
@@ -108,6 +113,8 @@ struct ApiMetricsRow {
     min_latency: f64,
     max_latency: f64,
 }
+
+// ── MetricsRepository impl ────────────────────────────────────────────────────
 
 #[async_trait]
 impl MetricsRepository for PgMetricsRepository {
@@ -164,7 +171,7 @@ impl MetricsRepository for PgMetricsRepository {
         client_id: Option<&str>,
         start_time: DateTime<Utc>,
         end_time: DateTime<Utc>,
-    ) -> Result<serde_json::Value, AppError> {
+    ) -> Result<OverallStats, AppError> {
         let row = if let Some(cid) = client_id {
             sqlx::query_as::<_, StatsRow>(
                 r#"
@@ -202,13 +209,14 @@ impl MetricsRepository for PgMetricsRepository {
             .await?
         };
 
-        Ok(serde_json::json!({
-            "total_hits": row.total_hits.to_string(),
-            "error_hits": row.error_hits.to_string(),
-            "avg_latency": row.avg_latency.to_string(),
-            "unique_services": row.unique_services.to_string(),
-            "unique_endpoints": row.unique_endpoints.to_string(),
-        }))
+        // Map SQLx row → domain struct (no allocation overhead from JSON)
+        Ok(OverallStats {
+            total_hits: row.total_hits,
+            error_hits: row.error_hits,
+            avg_latency: row.avg_latency,
+            unique_services: row.unique_services,
+            unique_endpoints: row.unique_endpoints,
+        })
     }
 
     async fn get_top_endpoints(
@@ -216,8 +224,8 @@ impl MetricsRepository for PgMetricsRepository {
         client_id: Option<&str>,
         limit: i64,
         start_time: Option<DateTime<Utc>>,
-    ) -> Result<Vec<serde_json::Value>, AppError> {
-        let safe_limit = limit.min(MAX_LIMIT).max(1);
+    ) -> Result<Vec<EndpointStat>, AppError> {
+        let safe_limit = limit.clamp(1, MAX_LIMIT);
 
         let rows: Vec<EndpointRow> = if let Some(cid) = client_id {
             if let Some(st) = start_time {
@@ -276,14 +284,18 @@ impl MetricsRepository for PgMetricsRepository {
             .await?
         };
 
-        Ok(rows.into_iter().map(|r| serde_json::json!({
-            "service_name": r.service_name,
-            "endpoint": r.endpoint,
-            "method": r.method,
-            "total_hits": r.total_hits.to_string(),
-            "avg_latency": format!("{:.3}", r.avg_latency),
-            "error_hits": r.error_hits.to_string(),
-        })).collect())
+        // Map directly — no intermediate JSON Value
+        Ok(rows
+            .into_iter()
+            .map(|r| EndpointStat {
+                service_name: r.service_name,
+                endpoint: r.endpoint,
+                method: r.method,
+                total_hits: r.total_hits,
+                avg_latency: r.avg_latency,
+                error_hits: r.error_hits,
+            })
+            .collect())
     }
 
     async fn get_metrics(
@@ -292,8 +304,8 @@ impl MetricsRepository for PgMetricsRepository {
         start_time: DateTime<Utc>,
         end_time: DateTime<Utc>,
         limit: i64,
-    ) -> Result<Vec<serde_json::Value>, AppError> {
-        let safe_limit = limit.min(MAX_LIMIT).max(1);
+    ) -> Result<Vec<TimeSeriesEntry>, AppError> {
+        let safe_limit = limit.clamp(1, MAX_LIMIT);
 
         let rows: Vec<TimeSeriesRow> = if let Some(cid) = client_id {
             sqlx::query_as::<_, TimeSeriesRow>(
@@ -342,17 +354,20 @@ impl MetricsRepository for PgMetricsRepository {
             .await?
         };
 
-        Ok(rows.into_iter().map(|r| serde_json::json!({
-            "service_name": r.service_name,
-            "endpoint": r.endpoint,
-            "method": r.method,
-            "total_hits": r.total_hits.to_string(),
-            "error_hits": r.error_hits.to_string(),
-            "avg_latency": format!("{:.3}", r.avg_latency),
-            "min_latency": format!("{:.3}", r.min_latency),
-            "max_latency": format!("{:.3}", r.max_latency),
-            "time_bucket": r.time_bucket.and_utc().to_rfc3339(),
-        })).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| TimeSeriesEntry {
+                service_name: r.service_name,
+                endpoint: r.endpoint,
+                method: r.method,
+                total_hits: r.total_hits,
+                error_hits: r.error_hits,
+                avg_latency: r.avg_latency,
+                min_latency: r.min_latency,
+                max_latency: r.max_latency,
+                time_bucket: r.time_bucket.and_utc(),
+            })
+            .collect())
     }
 
     async fn get_client_apis_metrics(
@@ -360,7 +375,7 @@ impl MetricsRepository for PgMetricsRepository {
         client_id: &str,
         limit: i64,
         offset: i64,
-    ) -> Result<(Vec<serde_json::Value>, i64), AppError> {
+    ) -> Result<(Vec<ApiMetricsEntry>, i64), AppError> {
         let count_row: (i64,) = sqlx::query_as(
             r#"
             SELECT COUNT(*) FROM (
@@ -399,16 +414,19 @@ impl MetricsRepository for PgMetricsRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let items: Vec<serde_json::Value> = rows.into_iter().map(|r| serde_json::json!({
-            "service_name": r.service_name,
-            "endpoint": r.endpoint,
-            "method": r.method,
-            "total_hits": r.total_hits.to_string(),
-            "error_hits": r.error_hits.to_string(),
-            "avg_latency": format!("{:.3}", r.avg_latency),
-            "min_latency": format!("{:.3}", r.min_latency),
-            "max_latency": format!("{:.3}", r.max_latency),
-        })).collect();
+        let items: Vec<ApiMetricsEntry> = rows
+            .into_iter()
+            .map(|r| ApiMetricsEntry {
+                service_name: r.service_name,
+                endpoint: r.endpoint,
+                method: r.method,
+                total_hits: r.total_hits,
+                error_hits: r.error_hits,
+                avg_latency: r.avg_latency,
+                min_latency: r.min_latency,
+                max_latency: r.max_latency,
+            })
+            .collect();
 
         Ok((items, total_count))
     }

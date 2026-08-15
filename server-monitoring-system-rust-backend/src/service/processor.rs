@@ -1,14 +1,17 @@
+use bson::oid::ObjectId;
 use chrono::{DateTime, Timelike, Utc};
 use std::sync::Arc;
 
+use crate::domain::api_hit::ApiHit;
+use crate::domain::ingest::HitEventData;
 use crate::error::app_error::AppError;
 use crate::repository::api_hit_repo::ApiHitRepository;
 use crate::repository::metrics_repo::MetricsRepository;
 
-/// Processor service — processes consumed events from the message queue.
+/// Processor service — handles the dual-write pattern.
 ///
-/// Handles the dual-write pattern: saves raw events to MongoDB and
-/// updates aggregated metrics in PostgreSQL.
+/// Operates on typed `HitEventData` structs from the consumer — no `serde_json::Value`
+/// field lookups on the hot consumer path.
 pub struct ProcessorService {
     api_hit_repository: Arc<dyn ApiHitRepository>,
     metrics_repository: Arc<dyn MetricsRepository>,
@@ -25,112 +28,106 @@ impl ProcessorService {
         }
     }
 
-    /// Get time bucket (truncate timestamp to the start of the hour).
-    fn get_time_bucket(timestamp: &str) -> DateTime<Utc> {
-        let dt = timestamp
-            .parse::<DateTime<Utc>>()
-            .unwrap_or_else(|_| Utc::now());
-
+    /// Truncate a timestamp to the start of the hour (time-bucket for metrics).
+    fn time_bucket(dt: DateTime<Utc>) -> DateTime<Utc> {
         dt.with_minute(0)
             .and_then(|d| d.with_second(0))
             .and_then(|d| d.with_nanosecond(0))
             .unwrap_or(dt)
     }
 
-    /// Process a single event — save raw data and update metrics.
-    pub async fn process_event(&self, event_data: serde_json::Value) -> Result<(), AppError> {
-        let event_id = event_data
-            .get("eventId")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-
+    /// Process a single event — save raw data to MongoDB and update PG metrics.
+    ///
+    /// Accepts a typed `HitEventData` struct deserialized by the consumer,
+    /// so there is no `serde_json::Value` field-extraction overhead here.
+    pub async fn process_event(&self, data: HitEventData) -> Result<(), AppError> {
         tracing::info!(
-            event_id = %event_id,
-            client_id = event_data.get("clientId").and_then(|v| v.as_str()).unwrap_or(""),
-            service_name = event_data.get("serviceName").and_then(|v| v.as_str()).unwrap_or(""),
-            endpoint = event_data.get("endpoint").and_then(|v| v.as_str()).unwrap_or(""),
-            method = event_data.get("method").and_then(|v| v.as_str()).unwrap_or(""),
-            "Processing event data"
+            event_id = %data.event_id,
+            client_id = %data.client_id,
+            service_name = %data.service_name,
+            endpoint = %data.endpoint,
+            method = %data.method,
+            "Processing event"
         );
 
+        // Build typed ApiHit entity
+        let client_oid = ObjectId::parse_str(&data.client_id)
+            .unwrap_or_else(|_| ObjectId::new());
+
+        let api_key_oid = data
+            .api_key_id
+            .as_deref()
+            .and_then(|s| ObjectId::parse_str(s).ok());
+
+        let hit = ApiHit {
+            id: Some(ObjectId::new()),
+            event_id: data.event_id.clone(),
+            client_id: client_oid,
+            api_key_id: api_key_oid,
+            service_name: data.service_name.clone(),
+            endpoint: data.endpoint.clone(),
+            method: data.method.clone(),
+            status_code: data.status_code as i32,
+            latency_ms: data.latency_ms,
+            ip: Some(data.ip.clone()),
+            user_agent: if data.user_agent.is_empty() {
+                None
+            } else {
+                Some(data.user_agent.clone())
+            },
+            timestamp: Some(data.timestamp),
+            created_at: Some(Utc::now()),
+        };
+
         // STEP 1: Save raw event to MongoDB
-        let raw_saved;
-        match self.api_hit_repository.save(event_data.clone()).await {
+        match self.api_hit_repository.save(&hit).await {
             Ok(_) => {
-                raw_saved = true;
-                tracing::info!(event_id = %event_id, "Raw event saved to MongoDB");
+                tracing::info!(event_id = %data.event_id, "Raw event saved to MongoDB");
             }
             Err(e) => {
                 tracing::error!(
-                    event_id = %event_id,
+                    event_id = %data.event_id,
                     error = %e,
-                    "Critical: Failed to save raw event to MongoDB"
+                    "Critical: failed to save raw event to MongoDB"
                 );
                 return Err(e);
             }
         }
 
-        // STEP 2: Update aggregated metrics in PostgreSQL
-        if let Err(e) = self.update_metrics_with_fallback(&event_data).await {
-            if !raw_saved {
-                return Err(e);
-            }
+        // STEP 2: Upsert aggregated metrics in PostgreSQL
+        let time_bucket = Self::time_bucket(data.timestamp);
+        let error_hits: i32 = if data.status_code >= 400 { 1 } else { 0 };
+
+        if let Err(e) = self
+            .metrics_repository
+            .upsert_endpoint_metrics(
+                &data.client_id,
+                &data.service_name,
+                &data.endpoint,
+                &data.method,
+                1,
+                error_hits,
+                data.latency_ms,
+                data.latency_ms,
+                data.latency_ms,
+                time_bucket,
+            )
+            .await
+        {
+            // Non-fatal: raw event is already saved
             tracing::error!(
-                event_id = %event_id,
+                event_id = %data.event_id,
                 error = %e,
-                "Non-critical: Raw event saved but metrics update failed"
+                "Non-critical: raw event saved but metrics update failed"
             );
         } else {
-            tracing::info!(event_id = %event_id, "Event processed successfully");
+            tracing::info!(event_id = %data.event_id, "Event processed successfully");
         }
 
         Ok(())
     }
 
-    async fn update_metrics_with_fallback(
-        &self,
-        event_data: &serde_json::Value,
-    ) -> Result<(), AppError> {
-        let timestamp = event_data
-            .get("timestamp")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        let time_bucket = Self::get_time_bucket(timestamp);
-
-        let client_id = event_data.get("clientId").and_then(|v| v.as_str()).unwrap_or("");
-        let service_name = event_data.get("serviceName").and_then(|v| v.as_str()).unwrap_or("");
-        let endpoint = event_data.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
-        let method = event_data.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        let status_code = event_data.get("statusCode").and_then(|v| v.as_i64()).unwrap_or(0);
-        let latency_ms = event_data.get("latencyMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
-
-        let error_hits = if status_code >= 400 { 1 } else { 0 };
-
-        self.metrics_repository
-            .upsert_endpoint_metrics(
-                client_id,
-                service_name,
-                endpoint,
-                method,
-                1,
-                error_hits,
-                latency_ms,
-                latency_ms,
-                latency_ms,
-                time_bucket,
-            )
-            .await?;
-
-        tracing::info!(
-            event_id = event_data.get("eventId").and_then(|v| v.as_str()).unwrap_or(""),
-            "Metrics updated successfully"
-        );
-
-        Ok(())
-    }
-
-    /// Cleanup old events before a given retention period.
+    /// Delete raw events older than `days_to_keep` days.
     pub async fn cleanup_old_events(&self, days_to_keep: i64) -> Result<u64, AppError> {
         let cutoff = Utc::now() - chrono::Duration::days(days_to_keep);
         self.api_hit_repository.delete_old_hits(cutoff).await

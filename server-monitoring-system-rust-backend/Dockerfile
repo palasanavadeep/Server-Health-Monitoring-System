@@ -1,28 +1,73 @@
-# Stage 1: Build
-FROM rust:1.82-slim AS builder
+# syntax=docker/dockerfile:1.7
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+# ── Stage 1: Planner ────────────────────────────────────────────────────────────
+# Computes the dependency recipe from Cargo manifests so the next stage
+# can cache the heavy compilation step separately from application code.
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS planner
 
 WORKDIR /app
-COPY Cargo.toml Cargo.lock* ./
-# Create a dummy src to cache dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs && echo "fn main() {}" > src/consumer.rs && echo "" > src/lib.rs
-RUN cargo build --release --bin api-server 2>/dev/null || true
-RUN rm -rf src
 
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release --bin api-server
 
-# Stage 2: Runtime
-FROM debian:bookworm-slim
+RUN cargo chef prepare --recipe-path recipe.json
 
-RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+# ── Stage 2: Builder ────────────────────────────────────────────────────────────
+# Cook (pre-compile) all dependencies first (cached layer), then compile
+# the application binaries on top.
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS builder
 
 WORKDIR /app
-COPY --from=builder /app/target/release/api-server ./api-server
 
-RUN mkdir -p logs
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        pkg-config \
+        libssl-dev \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Restore the dependency recipe and pre-compile deps (cached unless Cargo.lock changes)
+COPY --from=planner /app/recipe.json recipe.json
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo chef cook --release --recipe-path recipe.json
+
+# Copy full source after deps are compiled (only app code triggers rebuild)
+COPY . .
+
+# Build both application binaries
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo build --release --bin api-server --bin consumer
+
+RUN ls -lah /app/target/release
+
+# ── Stage 3: Runtime ────────────────────────────────────────────────────────────
+# Minimal image — only the compiled binaries and system runtime deps.
+FROM debian:bookworm-slim AS runtime
+
+WORKDIR /app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libssl3 \
+        curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy both release binaries from the builder
+COPY --from=builder /app/target/release/api-server  /usr/local/bin/api-server
+COPY --from=builder /app/target/release/consumer    /usr/local/bin/consumer
+
+# Copy optional init/utility scripts
+COPY scripts/ /app/scripts/
+
+# Non-root user for security
+RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 5000
 
-CMD ["./api-server"]
+# Default command — overridden in docker-compose for the consumer service
+CMD ["api-server"]

@@ -1,8 +1,8 @@
-use actix_web::{web, App, HttpServer, HttpResponse};
+use actix_web::{web, App, HttpResponse, HttpServer};
 use std::sync::Arc;
 
 use server_monitoring::app_state::AppState;
-use server_monitoring::config::database::{MongoConnection, create_pg_pool};
+use server_monitoring::config::database::{create_pg_pool, MongoConnection};
 use server_monitoring::config::messaging::RabbitMqConnection;
 use server_monitoring::config::settings::AppConfig;
 use server_monitoring::config::telemetry;
@@ -23,10 +23,11 @@ use server_monitoring::util::response::ResponseFormatter;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Load environment variables from .env file
+    // Load environment variables from .env file (no-op if file missing)
     dotenvy::dotenv().ok();
 
-    // Load typed configuration from environment
+    // Load and validate typed configuration — panics with a clear message
+    // if required env vars (PG_PASSWORD, JWT_SECRET) are not set.
     let config = AppConfig::from_env();
 
     // Initialize structured logging / tracing
@@ -48,7 +49,14 @@ async fn main() -> std::io::Result<()> {
 
     let pg_pool = create_pg_pool(&config.postgres_connection_string())
         .await
-        .expect("Failed to connect to PostgreSQL");
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to connect to PostgreSQL ({}): {}\n\
+                 Check PG_HOST, PG_PORT, PG_DATABASE, PG_USER, PG_PASSWORD in your .env file.",
+                config.postgres_connection_string(),
+                e
+            )
+        });
 
     // ── Message broker connection ───────────────────────────────────────────
 
@@ -58,7 +66,7 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("Failed to connect to RabbitMQ");
 
-    // ── Repository layer (trait objects for polymorphism) ──────────────────
+    // ── Repository layer (trait objects for DI) ────────────────────────────
 
     let user_repo: Arc<dyn server_monitoring::repository::user_repo::UserRepository> =
         Arc::new(MongoUserRepository::new(&db));
@@ -76,21 +84,21 @@ async fn main() -> std::io::Result<()> {
 
     let auth_service = AuthService::new(user_repo.clone(), config.clone());
 
-    let client_service = ClientService::new(
-        client_repo,
-        api_key_repo,
-        user_repo,
-    );
+    let client_service = ClientService::new(client_repo, api_key_repo, user_repo);
 
     let analytics_service = AnalyticsService::new(metrics_repo);
 
-    // Event producer with circuit breaker + retry
-    let circuit_breaker = Arc::new(CircuitBreaker::new(2, 30_000, 3));
+    // Event producer with circuit breaker + retry — all parameters sourced from config
+    let circuit_breaker = Arc::new(CircuitBreaker::new(
+        config.resilience.cb_failure_threshold,
+        config.resilience.cb_cooldown_ms,
+        config.resilience.cb_half_open_attempts,
+    ));
     let retry_strategy = Arc::new(RetryStrategy::new(
         config.rabbitmq.retry_attempts,
         config.rabbitmq.retry_delay,
-        30_000,
-        0.3,
+        config.resilience.retry_max_delay_ms,
+        config.resilience.retry_jitter_factor,
     ));
     let event_producer = EventProducer::new(
         channel,

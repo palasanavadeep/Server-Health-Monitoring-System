@@ -81,7 +81,7 @@ pub async fn create_pg_pool(connection_string: &str) -> Result<PgPool, sqlx::Err
     tracing::info!("PG Pool Created");
 
     // Test connection
-    let row: (chrono::NaiveDateTime,) = sqlx::query_as("SELECT NOW()")
+    let row: (chrono::DateTime<chrono::Utc>,) = sqlx::query_as("SELECT NOW()")
         .fetch_one(&pool)
         .await?;
 

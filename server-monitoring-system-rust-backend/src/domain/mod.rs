@@ -8,5 +8,7 @@ pub mod api_hit;
 pub mod api_key;
 pub mod client;
 pub mod event;
+pub mod ingest;
+pub mod metrics;
 pub mod role;
 pub mod user;

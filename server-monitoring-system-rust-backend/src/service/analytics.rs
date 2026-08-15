@@ -1,10 +1,15 @@
 use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 
+use crate::domain::metrics::{
+    ApiMetricsEntryResponse, DashboardData, EndpointStatResponse, OverallStatsResponse,
+    PaginatedApiMetricsResponse, Pagination, TimeRange, TimeSeriesEntryResponse,
+};
 use crate::error::app_error::AppError;
 use crate::repository::metrics_repo::MetricsRepository;
 
-/// Analytics service — aggregates and transforms metrics data for dashboards.
+/// Analytics service — all methods return strongly-typed response structs.
+/// No serde_json::Value is used at any layer boundary.
 pub struct AnalyticsService {
     metrics_repository: Arc<dyn MetricsRepository>,
 }
@@ -14,21 +19,18 @@ impl AnalyticsService {
         Self { metrics_repository }
     }
 
-    /// Parse time filters with defaults (last 24h).
+    /// Parse time filters with defaults (last 24 h).
     fn parse_time_filters(
         start_time: Option<i64>,
         end_time: Option<i64>,
     ) -> (DateTime<Utc>, DateTime<Utc>) {
-        let end = match end_time {
-            Some(ts) => chrono::DateTime::from_timestamp_millis(ts).unwrap_or_else(Utc::now),
-            None => Utc::now(),
-        };
+        let end = end_time
+            .and_then(DateTime::from_timestamp_millis)
+            .unwrap_or_else(Utc::now);
 
-        let start = match start_time {
-            Some(ts) => chrono::DateTime::from_timestamp_millis(ts)
-                .unwrap_or_else(|| Utc::now() - Duration::hours(24)),
-            None => Utc::now() - Duration::hours(24),
-        };
+        let start = start_time
+            .and_then(DateTime::from_timestamp_millis)
+            .unwrap_or_else(|| Utc::now() - Duration::hours(24));
 
         (start, end)
     }
@@ -39,7 +41,7 @@ impl AnalyticsService {
         client_id: Option<&str>,
         start_time: Option<i64>,
         end_time: Option<i64>,
-    ) -> Result<serde_json::Value, AppError> {
+    ) -> Result<OverallStatsResponse, AppError> {
         let (start, end) = Self::parse_time_filters(start_time, end_time);
 
         let stats = self
@@ -47,27 +49,23 @@ impl AnalyticsService {
             .get_overall_stats(client_id, start, end)
             .await?;
 
-        let total_hits: i64 = stats.get("total_hits").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let error_hits: i64 = stats.get("error_hits").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let error_rate = if total_hits > 0 {
-            (error_hits as f64 / total_hits as f64) * 100.0
+        let error_rate = if stats.total_hits > 0 {
+            let raw = (stats.error_hits as f64 / stats.total_hits as f64) * 100.0;
+            (raw * 100.0).round() / 100.0
         } else {
             0.0
         };
 
-        Ok(serde_json::json!({
-            "totalHits": total_hits,
-            "errorHits": error_hits,
-            "successHits": total_hits - error_hits,
-            "errorRate": (error_rate * 100.0).round() / 100.0,
-            "avgLatency": stats.get("avg_latency").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
-            "uniqueServices": stats.get("unique_services").and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
-            "uniqueEndpoints": stats.get("unique_endpoints").and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
-            "timeRange": {
-                "start": start.to_rfc3339(),
-                "end": end.to_rfc3339(),
-            }
-        }))
+        Ok(OverallStatsResponse {
+            total_hits: stats.total_hits,
+            error_hits: stats.error_hits,
+            success_hits: stats.total_hits - stats.error_hits,
+            error_rate,
+            avg_latency: stats.avg_latency,
+            unique_services: stats.unique_services,
+            unique_endpoints: stats.unique_endpoints,
+            time_range: TimeRange { start, end },
+        })
     }
 
     /// Get top endpoints by hit count.
@@ -76,8 +74,8 @@ impl AnalyticsService {
         client_id: Option<&str>,
         limit: i64,
         start_time: Option<i64>,
-    ) -> Result<Vec<serde_json::Value>, AppError> {
-        let parsed_start = start_time.and_then(chrono::DateTime::from_timestamp_millis);
+    ) -> Result<Vec<EndpointStatResponse>, AppError> {
+        let parsed_start = start_time.and_then(DateTime::from_timestamp_millis);
 
         let endpoints = self
             .metrics_repository
@@ -87,35 +85,32 @@ impl AnalyticsService {
         Ok(endpoints
             .into_iter()
             .map(|ep| {
-                let total_hits: i64 = ep.get("total_hits").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
-                let error_hits: i64 = ep.get("error_hits").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
-                let error_rate = if total_hits > 0 {
-                    format!("{:.2}", (error_hits as f64 / total_hits as f64) * 100.0)
+                let error_rate = if ep.total_hits > 0 {
+                    (ep.error_hits as f64 / ep.total_hits as f64) * 100.0
                 } else {
-                    "0.00".to_string()
+                    0.0
                 };
-
-                serde_json::json!({
-                    "serviceName": ep.get("service_name"),
-                    "endpoint": ep.get("endpoint"),
-                    "method": ep.get("method"),
-                    "totalHits": total_hits,
-                    "avgLatency": ep.get("avg_latency").and_then(|v| v.as_str()).unwrap_or("0.000"),
-                    "errorHits": error_hits,
-                    "errorRate": error_rate,
-                })
+                EndpointStatResponse {
+                    service_name: ep.service_name,
+                    endpoint: ep.endpoint,
+                    method: ep.method,
+                    total_hits: ep.total_hits,
+                    avg_latency: ep.avg_latency,
+                    error_hits: ep.error_hits,
+                    error_rate,
+                }
             })
             .collect())
     }
 
-    /// Get time series metrics data.
+    /// Get time-series metrics data.
     pub async fn get_time_series(
         &self,
         client_id: Option<&str>,
         start_time: Option<i64>,
         end_time: Option<i64>,
         limit: i64,
-    ) -> Result<Vec<serde_json::Value>, AppError> {
+    ) -> Result<Vec<TimeSeriesEntryResponse>, AppError> {
         let (start, end) = Self::parse_time_filters(start_time, end_time);
 
         let metrics = self
@@ -125,18 +120,16 @@ impl AnalyticsService {
 
         Ok(metrics
             .into_iter()
-            .map(|m| {
-                serde_json::json!({
-                    "serviceName": m.get("service_name"),
-                    "endpoint": m.get("endpoint"),
-                    "method": m.get("method"),
-                    "totalHits": m.get("total_hits").and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
-                    "errorHits": m.get("error_hits").and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
-                    "avgLatency": m.get("avg_latency"),
-                    "minLatency": m.get("min_latency"),
-                    "maxLatency": m.get("max_latency"),
-                    "timeBucket": m.get("time_bucket"),
-                })
+            .map(|m| TimeSeriesEntryResponse {
+                service_name: m.service_name,
+                endpoint: m.endpoint,
+                method: m.method,
+                total_hits: m.total_hits,
+                error_hits: m.error_hits,
+                avg_latency: m.avg_latency,
+                min_latency: m.min_latency,
+                max_latency: m.max_latency,
+                time_bucket: m.time_bucket,
             })
             .collect())
     }
@@ -147,9 +140,9 @@ impl AnalyticsService {
         client_id: &str,
         page: i64,
         limit: i64,
-    ) -> Result<serde_json::Value, AppError> {
+    ) -> Result<PaginatedApiMetricsResponse, AppError> {
         let parsed_page = page.max(1);
-        let parsed_limit = limit.max(1).min(100);
+        let parsed_limit = limit.clamp(1, 100);
         let offset = (parsed_page - 1) * parsed_limit;
 
         let (rows, total_count) = self
@@ -157,46 +150,63 @@ impl AnalyticsService {
             .get_client_apis_metrics(client_id, parsed_limit, offset)
             .await?;
 
-        let items: Vec<serde_json::Value> = rows
-            .into_iter()
-            .map(|row| {
-                let total_hits: i64 = row.get("total_hits").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
-                let error_hits: i64 = row.get("error_hits").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
-                let error_rate = if total_hits > 0 {
-                    ((error_hits as f64 / total_hits as f64) * 10000.0).round() / 100.0
-                } else {
-                    0.0
-                };
-
-                serde_json::json!({
-                    "serviceName": row.get("service_name"),
-                    "endpoint": row.get("endpoint"),
-                    "method": row.get("method"),
-                    "totalHits": total_hits,
-                    "errorHits": error_hits,
-                    "successHits": total_hits - error_hits,
-                    "errorRate": error_rate,
-                    "avgLatency": row.get("avg_latency").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
-                    "minLatency": row.get("min_latency").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
-                    "maxLatency": row.get("max_latency").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
-                })
-            })
-            .collect();
-
         let total_pages = if parsed_limit > 0 {
             (total_count as f64 / parsed_limit as f64).ceil() as i64
         } else {
             0
         };
 
-        Ok(serde_json::json!({
-            "items": items,
-            "pagination": {
-                "page": parsed_page,
-                "limit": parsed_limit,
-                "totalCount": total_count,
-                "totalPages": total_pages,
-            }
-        }))
+        let items: Vec<ApiMetricsEntryResponse> = rows
+            .into_iter()
+            .map(|r| {
+                let error_rate = if r.total_hits > 0 {
+                    ((r.error_hits as f64 / r.total_hits as f64) * 10_000.0).round() / 100.0
+                } else {
+                    0.0
+                };
+                ApiMetricsEntryResponse {
+                    service_name: r.service_name,
+                    endpoint: r.endpoint,
+                    method: r.method,
+                    total_hits: r.total_hits,
+                    error_hits: r.error_hits,
+                    success_hits: r.total_hits - r.error_hits,
+                    error_rate,
+                    avg_latency: r.avg_latency,
+                    min_latency: r.min_latency,
+                    max_latency: r.max_latency,
+                }
+            })
+            .collect();
+
+        Ok(PaginatedApiMetricsResponse {
+            items,
+            pagination: Pagination {
+                page: parsed_page,
+                limit: parsed_limit,
+                total_count,
+                total_pages,
+            },
+        })
+    }
+
+    /// Get all dashboard data in a single parallel fetch.
+    pub async fn get_dashboard(
+        &self,
+        client_id: Option<&str>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> DashboardData {
+        let stats_fut = self.get_overall_stats(client_id, start_time, end_time);
+        let top_fut = self.get_top_endpoints(client_id, 5, start_time);
+        let ts_fut = self.get_time_series(client_id, start_time, end_time, 24);
+
+        let (stats_res, top_res, ts_res) = tokio::join!(stats_fut, top_fut, ts_fut);
+
+        DashboardData {
+            stats: stats_res.ok(),
+            top_endpoints: top_res.ok(),
+            recent_activity: ts_res.ok(),
+        }
     }
 }

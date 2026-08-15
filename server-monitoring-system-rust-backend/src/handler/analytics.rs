@@ -5,121 +5,7 @@ use crate::error::app_error::AppError;
 use crate::middleware::authenticate::AuthenticatedUser;
 use crate::util::response::ResponseFormatter;
 
-/// GET /api/analytics/stats
-pub async fn get_stats(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-    query: web::Query<AnalyticsQuery>,
-) -> HttpResponse {
-    let user = match get_user(&req) {
-        Some(u) => u,
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
-
-    match ensure_and_resolve(&state, &user, query.client_id.as_deref()).await {
-        Ok(final_client_id) => {
-            let time_range = match validate_time_range(query.start_time.as_deref(), query.end_time.as_deref()) {
-                Ok(r) => r,
-                Err(e) => return e.to_response(),
-            };
-
-            match state.analytics_service.get_overall_stats(
-                final_client_id.as_deref(), time_range.0, time_range.1,
-            ).await {
-                Ok(stats) => HttpResponse::Ok().json(
-                    ResponseFormatter::success(stats, "Statistics retrieved successfully", 200),
-                ),
-                Err(e) => e.to_response(),
-            }
-        }
-        Err(e) => e.to_response(),
-    }
-}
-
-/// GET /api/analytics/dashboard
-pub async fn get_dashboard(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-    query: web::Query<AnalyticsQuery>,
-) -> HttpResponse {
-    let user = match get_user(&req) {
-        Some(u) => u,
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
-
-    match ensure_and_resolve(&state, &user, query.client_id.as_deref()).await {
-        Ok(final_client_id) => {
-            let time_range = match validate_time_range(query.start_time.as_deref(), query.end_time.as_deref()) {
-                Ok(r) => r,
-                Err(e) => return e.to_response(),
-            };
-
-            // Parallel fetch (mirrors Promise.allSettled pattern from Node.js)
-            let stats_fut = state.analytics_service.get_overall_stats(
-                final_client_id.as_deref(), time_range.0, time_range.1,
-            );
-            let top_fut = state.analytics_service.get_top_endpoints(
-                final_client_id.as_deref(), 5, time_range.0,
-            );
-            let ts_fut = state.analytics_service.get_time_series(
-                final_client_id.as_deref(), time_range.0, time_range.1, 24,
-            );
-
-            let (stats_res, top_res, ts_res) = tokio::join!(stats_fut, top_fut, ts_fut);
-
-            let stats = stats_res.ok();
-            let top_endpoints = top_res.ok();
-            let recent_activity = ts_res.ok();
-
-            let dashboard = serde_json::json!({
-                "stats": stats,
-                "topEndpoints": top_endpoints,
-                "recentActitivy": recent_activity, // preserve original typo from Node.js
-            });
-
-            HttpResponse::Ok().json(
-                ResponseFormatter::success(dashboard, "Dashboard data retrieved successfully", 200),
-            )
-        }
-        Err(e) => e.to_response(),
-    }
-}
-
-/// GET /api/analytics/apis
-pub async fn get_apis_metrics(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-    query: web::Query<ApiMetricsQuery>,
-) -> HttpResponse {
-    let user = match get_user(&req) {
-        Some(u) => u,
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
-
-    match ensure_and_resolve(&state, &user, query.client_id.as_deref()).await {
-        Ok(final_client_id) => {
-            let client_id = match final_client_id {
-                Some(id) => id,
-                None => return HttpResponse::BadRequest().json(
-                    ResponseFormatter::error("clientId is required", 400, None),
-                ),
-            };
-
-            let page = query.page.unwrap_or(1);
-            let limit = query.limit.unwrap_or(10);
-
-            match state.analytics_service.get_client_apis_metrics(&client_id, page, limit).await {
-                Ok(metrics) => HttpResponse::Ok().json(
-                    ResponseFormatter::success(metrics, "API metrics retrieved successfully", 200),
-                ),
-                Err(e) => e.to_response(),
-            }
-        }
-        Err(e) => e.to_response(),
-    }
-}
-
-// ── Query structs ──────────────────────────────────────────────────────────
+// ── Query params ───────────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
 pub struct AnalyticsQuery {
@@ -139,17 +25,17 @@ pub struct ApiMetricsQuery {
     pub client_id: Option<String>,
 }
 
-// ── Private helpers ────────────────────────────────────────────────────────
+// ── Private helpers ────────────────────────────────────────────────────────────
 
 fn get_user(req: &HttpRequest) -> Option<AuthenticatedUser> {
     req.extensions().get::<AuthenticatedUser>().cloned()
 }
 
-fn validate_time_range(
-    start_time: Option<&str>,
-    end_time: Option<&str>,
+fn parse_time_range(
+    start: Option<&str>,
+    end: Option<&str>,
 ) -> Result<(Option<i64>, Option<i64>), AppError> {
-    let parse_value = |v: &str| -> Result<i64, AppError> {
+    let parse = |v: &str| -> Result<i64, AppError> {
         if v.chars().all(|c| c.is_ascii_digit()) {
             v.parse::<i64>()
                 .map_err(|_| AppError::bad_request("Invalid time format"))
@@ -164,26 +50,24 @@ fn validate_time_range(
         }
     };
 
-    let start = match start_time {
-        Some(s) if !s.is_empty() => Some(parse_value(s)?),
+    let s = match start {
+        Some(v) if !v.is_empty() => Some(parse(v)?),
+        _ => None,
+    };
+    let e = match end {
+        Some(v) if !v.is_empty() => Some(parse(v)?),
         _ => None,
     };
 
-    let end = match end_time {
-        Some(s) if !s.is_empty() => Some(parse_value(s)?),
-        _ => None,
-    };
-
-    if let (Some(s), Some(e)) = (start, end) {
+    if let (Some(s), Some(e)) = (s, e) {
         if s > e {
             return Err(AppError::bad_request("Invalid time range: start > end"));
         }
     }
-
-    Ok((start, end))
+    Ok((s, e))
 }
 
-async fn ensure_and_resolve(
+async fn resolve_client_id(
     state: &web::Data<AppState>,
     user: &AuthenticatedUser,
     query_client_id: Option<&str>,
@@ -195,10 +79,15 @@ async fn ensure_and_resolve(
 
     if !is_super_admin {
         let profile = state.auth_service.get_profile(&user.user_id).await?;
-        if profile.permissions.is_none()
-            || !profile.permissions.as_ref().map(|p| p.can_view_analytics).unwrap_or(false)
+        if !profile
+            .permissions
+            .as_ref()
+            .map(|p| p.can_view_analytics)
+            .unwrap_or(false)
         {
-            return Err(AppError::forbidden("Insufficient permissions to view analytics"));
+            return Err(AppError::forbidden(
+                "Insufficient permissions to view analytics",
+            ));
         }
     }
 
@@ -212,15 +101,142 @@ async fn ensure_and_resolve(
             Ok(None)
         }
     } else {
-        let client_id = user
+        let cid = user
             .client_id
             .as_ref()
             .ok_or_else(|| AppError::forbidden("Access denied - no client association"))?;
+        Ok(Some(cid.clone()))
+    }
+}
 
-        if client_id.len() != 24 || !client_id.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(AppError::bad_request("Invalid client association"));
+// ── Handlers ───────────────────────────────────────────────────────────────────
+
+/// GET /api/analytics/stats
+pub async fn get_stats(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    query: web::Query<AnalyticsQuery>,
+) -> HttpResponse {
+    let user = match get_user(&req) {
+        Some(u) => u,
+        None => {
+            return HttpResponse::Unauthorized().json(ResponseFormatter::error(
+                "Authentication required",
+                401,
+                None,
+            ))
         }
+    };
 
-        Ok(Some(client_id.clone()))
+    let client_id = match resolve_client_id(&state, &user, query.client_id.as_deref()).await {
+        Ok(c) => c,
+        Err(e) => return e.to_response(),
+    };
+
+    let (start, end) =
+        match parse_time_range(query.start_time.as_deref(), query.end_time.as_deref()) {
+            Ok(r) => r,
+            Err(e) => return e.to_response(),
+        };
+
+    match state
+        .analytics_service
+        .get_overall_stats(client_id.as_deref(), start, end)
+        .await
+    {
+        Ok(stats) => HttpResponse::Ok().json(ResponseFormatter::success(
+            serde_json::json!(stats),
+            "Statistics retrieved successfully",
+            200,
+        )),
+        Err(e) => e.to_response(),
+    }
+}
+
+/// GET /api/analytics/dashboard
+pub async fn get_dashboard(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    query: web::Query<AnalyticsQuery>,
+) -> HttpResponse {
+    let user = match get_user(&req) {
+        Some(u) => u,
+        None => {
+            return HttpResponse::Unauthorized().json(ResponseFormatter::error(
+                "Authentication required",
+                401,
+                None,
+            ))
+        }
+    };
+
+    let client_id = match resolve_client_id(&state, &user, query.client_id.as_deref()).await {
+        Ok(c) => c,
+        Err(e) => return e.to_response(),
+    };
+
+    let (start, end) =
+        match parse_time_range(query.start_time.as_deref(), query.end_time.as_deref()) {
+            Ok(r) => r,
+            Err(e) => return e.to_response(),
+        };
+
+    // Dashboard data fetched in parallel inside the service — typed DashboardData returned
+    let dashboard = state
+        .analytics_service
+        .get_dashboard(client_id.as_deref(), start, end)
+        .await;
+
+    HttpResponse::Ok().json(ResponseFormatter::success(
+        serde_json::json!(dashboard),
+        "Dashboard data retrieved successfully",
+        200,
+    ))
+}
+
+/// GET /api/analytics/apis
+pub async fn get_apis_metrics(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    query: web::Query<ApiMetricsQuery>,
+) -> HttpResponse {
+    let user = match get_user(&req) {
+        Some(u) => u,
+        None => {
+            return HttpResponse::Unauthorized().json(ResponseFormatter::error(
+                "Authentication required",
+                401,
+                None,
+            ))
+        }
+    };
+
+    let client_id = match resolve_client_id(&state, &user, query.client_id.as_deref()).await {
+        Ok(c) => c,
+        Err(e) => return e.to_response(),
+    };
+
+    let client_id = match client_id {
+        Some(id) => id,
+        None => {
+            return HttpResponse::BadRequest()
+                .json(ResponseFormatter::error("clientId is required", 400, None))
+        }
+    };
+
+    let page = query.page.unwrap_or(1);
+    let limit = query.limit.unwrap_or(10);
+
+    match state
+        .analytics_service
+        .get_client_apis_metrics(&client_id, page, limit)
+        .await
+    {
+        Ok(metrics) => HttpResponse::Ok().json(ResponseFormatter::success(
+            serde_json::json!(metrics),
+            "API metrics retrieved successfully",
+            200,
+        )),
+        Err(e) => e.to_response(),
     }
 }

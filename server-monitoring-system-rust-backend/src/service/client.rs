@@ -4,7 +4,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::domain::api_key::{ApiKey, ApiKeyPermissions, ApiKeySecurity};
-use crate::domain::client::Client;
+use crate::domain::client::{
+    Client, CreateApiKeyRequest, CreateClientRequest, CreateClientUserRequest,
+    RotateApiKeyRequest, UpdateApiKeyRequest,
+};
 use crate::domain::role::{self, Role};
 use crate::domain::user::{User, UserPermissions, UserResponse};
 use crate::error::app_error::AppError;
@@ -12,10 +15,10 @@ use crate::repository::api_key_repo::ApiKeyRepository;
 use crate::repository::client_repo::ClientRepository;
 use crate::repository::user_repo::UserRepository;
 
-/// Client management service — handles clients, client users, and API keys.
+/// Client management service — all methods accept typed request DTOs.
 ///
-/// Uses trait-object repositories injected via the constructor for
-/// loose coupling and testability.
+/// No `serde_json::Value` crosses any service boundary; field validation
+/// is guaranteed at compile time by the DTO types.
 pub struct ClientService {
     client_repository: Arc<dyn ClientRepository>,
     api_key_repository: Arc<dyn ApiKeyRepository>,
@@ -35,58 +38,80 @@ impl ClientService {
         }
     }
 
-    /// Generate URL slug from name.
+    // ── Private helpers ────────────────────────────────────────────────────────
+
+    /// Generate URL slug from a display name.
     fn generate_slug(name: &str) -> String {
         name.to_lowercase()
             .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == ' ' || c == '-' {
-                    c
-                } else {
-                    ' '
-                }
-            })
+            .map(|c| if c.is_alphanumeric() || c == '-' { c } else { ' ' })
             .collect::<String>()
             .split_whitespace()
             .collect::<Vec<&str>>()
             .join("-")
     }
 
-    /// Generate a random API key value: sm_key_{40 hex chars}
+    /// Generate a random API key value: `sm_key_{40 hex chars}`.
     fn generate_api_key() -> String {
         let mut bytes = [0u8; 20];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
         format!("sm_key_{}", hex::encode(bytes))
     }
 
-    /// Check if user can access a client based on role.
-    fn can_user_access_client(user_role: &str, user_client_id: Option<&str>, client_id: &str) -> bool {
+    /// Check if a user with the given role may access the named client.
+    fn can_user_access_client(
+        user_role: &str,
+        user_client_id: Option<&str>,
+        client_id: &str,
+    ) -> bool {
         if user_role == Role::SuperAdmin.as_str() {
             return true;
         }
-        match user_client_id {
-            Some(ucid) => ucid == client_id,
-            None => false,
-        }
+        matches!(user_client_id, Some(ucid) if ucid == client_id)
     }
+
+    /// Shared validation + fetch used by API-key mutation methods.
+    async fn validate_api_key_access(
+        &self,
+        client_id: &str,
+        key_id: &str,
+        user_role: &str,
+        user_client_id: Option<&str>,
+    ) -> Result<ApiKey, AppError> {
+        if !Self::can_user_access_client(user_role, user_client_id, client_id) {
+            return Err(AppError::forbidden("Access denied"));
+        }
+
+        if user_role != Role::SuperAdmin.as_str() && user_role != Role::ClientAdmin.as_str() {
+            return Err(AppError::forbidden(
+                "Access denied - Insufficient permissions to manage API keys",
+            ));
+        }
+
+        let api_key = self
+            .api_key_repository
+            .find_by_key_id(key_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("API key not found"))?;
+
+        if api_key.client_id.to_hex() != client_id {
+            return Err(AppError::bad_request(
+                "API key does not belong to this client",
+            ));
+        }
+
+        Ok(api_key)
+    }
+
+    // ── Public service methods ─────────────────────────────────────────────────
 
     /// Create a new client organization.
     pub async fn create_client(
         &self,
-        client_data: serde_json::Value,
+        req: CreateClientRequest,
         admin_user_id: &str,
     ) -> Result<Client, AppError> {
-        let name = client_data
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::bad_request("Name is required"))?;
-
-        let email = client_data
-            .get("email")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::bad_request("Email is required"))?;
-
-        let slug = Self::generate_slug(name);
+        let slug = Self::generate_slug(&req.name);
 
         if self.client_repository.find_by_slug(&slug).await?.is_some() {
             return Err(AppError::bad_request(format!(
@@ -100,11 +125,11 @@ impl ClientService {
 
         let client = Client {
             id: None,
-            name: name.to_string(),
+            name: req.name,
             slug,
-            email: email.to_string(),
-            description: client_data.get("description").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            website: client_data.get("website").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            email: req.email,
+            description: req.description,
+            website: req.website,
             is_active: true,
             created_by: Some(admin_oid),
             created_at: None,
@@ -114,35 +139,35 @@ impl ClientService {
         self.client_repository.create(client).await
     }
 
-    /// Create a user for a client organization.
+    /// Create a user scoped to a client organization.
     pub async fn create_client_user(
         &self,
         client_id: &str,
-        user_data: serde_json::Value,
+        req: CreateClientUserRequest,
         admin_role: &str,
         admin_client_id: Option<&str>,
     ) -> Result<UserResponse, AppError> {
-        let _client = self.client_repository.find_by_id(client_id).await?
+        let _client = self
+            .client_repository
+            .find_by_id(client_id)
+            .await?
             .ok_or_else(|| AppError::not_found("Client not found"))?;
 
         if !Self::can_user_access_client(admin_role, admin_client_id, client_id) {
             return Err(AppError::forbidden("Access denied"));
         }
 
-        let username = user_data.get("username").and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::bad_request("Username is required"))?;
-        let email = user_data.get("email").and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::bad_request("Email is required"))?;
-        let password = user_data.get("password").and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::bad_request("Password is required"))?;
-        let role_str = user_data.get("role").and_then(|v| v.as_str())
+        let role_str = req
+            .role
+            .as_deref()
             .unwrap_or(Role::ClientViewer.as_str());
 
         if !role::is_valid_client_role(role_str) {
             return Err(AppError::bad_request("Invalid role for client user"));
         }
 
-        let parsed_role: Role = role_str.parse()
+        let parsed_role: Role = role_str
+            .parse()
             .map_err(|_| AppError::bad_request("Invalid role"))?;
 
         let permissions = if parsed_role == Role::ClientAdmin {
@@ -166,9 +191,9 @@ impl ClientService {
 
         let user = User {
             id: None,
-            username: username.to_string(),
-            email: email.to_string(),
-            password: Some(password.to_string()),
+            username: req.username,
+            email: req.email,
+            password: Some(req.password),
             role: parsed_role,
             client_id: Some(client_oid),
             permissions: Some(permissions),
@@ -194,12 +219,14 @@ impl ClientService {
     pub async fn create_api_key(
         &self,
         client_id: &str,
-        key_data: serde_json::Value,
+        req: CreateApiKeyRequest,
         user_role: &str,
         user_client_id: Option<&str>,
         user_id: &str,
     ) -> Result<ApiKey, AppError> {
-        let _client = self.client_repository.find_by_id(client_id).await?
+        self.client_repository
+            .find_by_id(client_id)
+            .await?
             .ok_or_else(|| AppError::not_found("Client not found"))?;
 
         if !Self::can_user_access_client(user_role, user_client_id, client_id) {
@@ -212,27 +239,17 @@ impl ClientService {
             ));
         }
 
-        let name = key_data.get("name").and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::bad_request("Name is required"))?;
+        let allowed_ips = if req.allowed_i_ps.is_empty() {
+            vec!["0.0.0.0/0".to_string()]
+        } else {
+            req.allowed_i_ps
+        };
 
-        let description = key_data.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let environment = key_data.get("environment").and_then(|v| v.as_str()).unwrap_or("production");
-        let expires_at_minutes: i64 = key_data.get("expiresAt").and_then(|v| v.as_i64()).unwrap_or(24);
-
-        let permissions_data = key_data.get("permissions").cloned().unwrap_or(serde_json::json!({}));
-        let security_data = key_data.get("security").cloned().unwrap_or(serde_json::json!({}));
-
-        let allowed_ips = security_data.get("allowedIPs")
-            .and_then(|v| v.as_array())
-            .filter(|arr| !arr.is_empty())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_else(|| vec!["0.0.0.0/0".to_string()]);
-
-        let allowed_origins = security_data.get("allowedOrigins")
-            .and_then(|v| v.as_array())
-            .filter(|arr| !arr.is_empty())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_else(|| vec!["*".to_string()]);
+        let allowed_origins = if req.allowed_origins.is_empty() {
+            vec!["*".to_string()]
+        } else {
+            req.allowed_origins
+        };
 
         let client_oid = ObjectId::parse_str(client_id)
             .map_err(|_| AppError::bad_request("Invalid client ID"))?;
@@ -244,28 +261,23 @@ impl ClientService {
             key_id: Uuid::new_v4().to_string(),
             key_value: Self::generate_api_key(),
             client_id: client_oid,
-            name: name.to_string(),
-            description,
-            environment: environment.to_string(),
+            name: req.name,
+            description: None,
+            environment: "production".to_string(),
             permissions: ApiKeyPermissions {
-                can_ingest: permissions_data.get("canIngest").and_then(|v| v.as_bool()).unwrap_or(true),
-                can_read_analytics: permissions_data.get("canReadAnalytics").and_then(|v| v.as_bool()).unwrap_or(false),
-                allowed_services: permissions_data.get("allowedServices")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-                    .unwrap_or_default(),
+                can_ingest: req.can_ingest,
+                can_read_analytics: req.can_read,
+                allowed_services: vec![],
             },
             security: ApiKeySecurity {
                 allowed_i_ps: allowed_ips,
                 allowed_origins,
                 last_rotated: Some(Utc::now()),
-                rotation_warning_days: security_data.get("rotationWarningDays")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(30) as u32,
+                rotation_warning_days: 30,
             },
             is_active: true,
             created_by: Some(user_oid),
-            expires_at: Some(Utc::now() + chrono::Duration::minutes(expires_at_minutes)),
+            expires_at: Some(Utc::now() + chrono::Duration::hours(24)),
             created_at: None,
             updated_at: None,
         };
@@ -286,12 +298,15 @@ impl ClientService {
         self.api_key_repository.find_by_client_id(client_id).await
     }
 
-    /// Get client by API key value (used by API key validation middleware).
+    /// Look up client + key by raw API key value (used by middleware).
     pub async fn get_client_by_api_key(
         &self,
         api_key_value: &str,
     ) -> Result<Option<(Client, ApiKey)>, AppError> {
-        let result = self.api_key_repository.find_by_key_value(api_key_value, false).await?;
+        let result = self
+            .api_key_repository
+            .find_by_key_value(api_key_value, false)
+            .await?;
 
         match result {
             Some((key, client)) => {
@@ -304,82 +319,39 @@ impl ClientService {
         }
     }
 
-    /// Validate API key access (authorization check).
-    async fn validate_api_key_access(
-        &self,
-        client_id: &str,
-        key_id: &str,
-        user_role: &str,
-        user_client_id: Option<&str>,
-    ) -> Result<ApiKey, AppError> {
-        if !Self::can_user_access_client(user_role, user_client_id, client_id) {
-            return Err(AppError::forbidden("Access denied"));
-        }
-
-        if user_role != Role::SuperAdmin.as_str() && user_role != Role::ClientAdmin.as_str() {
-            return Err(AppError::forbidden(
-                "Access denied - Insufficient permissions to manage API keys",
-            ));
-        }
-
-        let api_key = self.api_key_repository.find_by_key_id(key_id).await?
-            .ok_or_else(|| AppError::not_found("API key not found"))?;
-
-        if api_key.client_id.to_hex() != client_id {
-            return Err(AppError::bad_request("API key does not belong to this client"));
-        }
-
-        Ok(api_key)
-    }
-
-    /// Update an API key.
+    /// Update an API key using typed `UpdateApiKeyRequest`.
     pub async fn update_api_key(
         &self,
         client_id: &str,
         key_id: &str,
-        update_data: serde_json::Value,
+        req: UpdateApiKeyRequest,
         user_role: &str,
         user_client_id: Option<&str>,
     ) -> Result<Option<ApiKey>, AppError> {
-        let _existing = self.validate_api_key_access(client_id, key_id, user_role, user_client_id).await?;
+        self.validate_api_key_access(client_id, key_id, user_role, user_client_id)
+            .await?;
 
         let mut updates = bson::Document::new();
 
-        if let Some(name) = update_data.get("name").and_then(|v| v.as_str()) {
+        if let Some(name) = req.name {
             updates.insert("name", name);
         }
-        if let Some(desc) = update_data.get("description").and_then(|v| v.as_str()) {
-            updates.insert("description", desc);
+        if let Some(ips) = req.allowed_i_ps {
+            updates.insert("security.allowedIPs", ips);
         }
-        if let Some(env) = update_data.get("environment").and_then(|v| v.as_str()) {
-            updates.insert("environment", env);
+        if let Some(origins) = req.allowed_origins {
+            updates.insert("security.allowedOrigins", origins);
         }
-        if let Some(perms) = update_data.get("permissions") {
-            let can_ingest = perms.get("canIngest").and_then(|v| v.as_bool()).unwrap_or(true);
-            let can_read = perms.get("canReadAnalytics").and_then(|v| v.as_bool()).unwrap_or(false);
-            let services: Vec<String> = perms.get("allowedServices")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-                .unwrap_or_default();
-
-            updates.insert("permissions", doc! {
-                "canIngest": can_ingest,
-                "canReadAnalytics": can_read,
-                "allowedServices": services,
-            });
+        if let Some(can_ingest) = req.can_ingest {
+            updates.insert("permissions.canIngest", can_ingest);
+        }
+        if let Some(can_read) = req.can_read {
+            updates.insert("permissions.canReadAnalytics", can_read);
         }
 
-        if let Some(expires) = update_data.get("expiresAt") {
-            if let Some(minutes) = expires.as_i64() {
-                updates.insert("expiresAt", Utc::now() + chrono::Duration::minutes(minutes));
-            } else if let Some(date_str) = expires.as_str() {
-                if let Ok(dt) = date_str.parse::<chrono::DateTime<Utc>>() {
-                    updates.insert("expiresAt", dt);
-                }
-            }
-        }
-
-        self.api_key_repository.update_by_key_id(key_id, updates).await
+        self.api_key_repository
+            .update_by_key_id(key_id, updates)
+            .await
     }
 
     /// Delete an API key.
@@ -390,7 +362,8 @@ impl ClientService {
         user_role: &str,
         user_client_id: Option<&str>,
     ) -> Result<bool, AppError> {
-        self.validate_api_key_access(client_id, key_id, user_role, user_client_id).await?;
+        self.validate_api_key_access(client_id, key_id, user_role, user_client_id)
+            .await?;
         self.api_key_repository.delete_by_key_id(key_id).await
     }
 
@@ -403,40 +376,34 @@ impl ClientService {
         user_role: &str,
         user_client_id: Option<&str>,
     ) -> Result<Option<ApiKey>, AppError> {
-        self.validate_api_key_access(client_id, key_id, user_role, user_client_id).await?;
+        self.validate_api_key_access(client_id, key_id, user_role, user_client_id)
+            .await?;
         self.api_key_repository
             .update_by_key_id(key_id, doc! { "isActive": is_active })
             .await
     }
 
-    /// Rotate an API key (generate new key value).
+    /// Rotate an API key (generate a new key value).
     pub async fn rotate_api_key(
         &self,
         client_id: &str,
         key_id: &str,
-        options: serde_json::Value,
+        _req: RotateApiKeyRequest,
         user_role: &str,
         user_client_id: Option<&str>,
     ) -> Result<Option<ApiKey>, AppError> {
-        self.validate_api_key_access(client_id, key_id, user_role, user_client_id).await?;
+        self.validate_api_key_access(client_id, key_id, user_role, user_client_id)
+            .await?;
 
         let new_key_value = Self::generate_api_key();
-        let mut updates = doc! {
+        let updates = doc! {
             "keyValue": &new_key_value,
             "security.lastRotated": Utc::now(),
         };
 
-        if let Some(expires) = options.get("expiresAt") {
-            if let Some(minutes) = expires.as_i64() {
-                updates.insert("expiresAt", Utc::now() + chrono::Duration::minutes(minutes));
-            } else if let Some(date_str) = expires.as_str() {
-                if let Ok(dt) = date_str.parse::<chrono::DateTime<Utc>>() {
-                    updates.insert("expiresAt", dt);
-                }
-            }
-        }
-
-        self.api_key_repository.update_by_key_id(key_id, updates).await
+        self.api_key_repository
+            .update_by_key_id(key_id, updates)
+            .await
     }
 
     /// Get API key details.
@@ -447,6 +414,7 @@ impl ClientService {
         user_role: &str,
         user_client_id: Option<&str>,
     ) -> Result<ApiKey, AppError> {
-        self.validate_api_key_access(client_id, key_id, user_role, user_client_id).await
+        self.validate_api_key_access(client_id, key_id, user_role, user_client_id)
+            .await
     }
 }

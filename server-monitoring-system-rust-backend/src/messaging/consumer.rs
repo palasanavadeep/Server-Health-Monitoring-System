@@ -7,12 +7,16 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::domain::ingest::HitEvent;
 use crate::resilience::circuit_breaker::CircuitBreaker;
 use crate::resilience::retry::{is_retryable, RetryStrategy};
 use crate::service::processor::ProcessorService;
 
 /// Event consumer — processes messages from RabbitMQ with idempotency,
 /// retry, and dead-letter queue routing.
+///
+/// Deserializes incoming bytes directly into typed `HitEvent` structs,
+/// bypassing `serde_json::Value` intermediate representation on the hot path.
 pub struct EventConsumer {
     processor_service: Arc<ProcessorService>,
     channel: Arc<Mutex<Option<Channel>>>,
@@ -23,6 +27,9 @@ pub struct EventConsumer {
     poison_messages: Arc<Mutex<HashMap<String, u32>>>,
     stats: Arc<Mutex<ConsumerStats>>,
     is_running: Arc<std::sync::atomic::AtomicBool>,
+    /// Maximum entries in the in-memory idempotency cache.
+    /// Configured via `CONSUMER_IDEMPOTENCY_CACHE_SIZE`.
+    idempotency_cache_size: usize,
 }
 
 /// Runtime statistics for the consumer.
@@ -41,6 +48,7 @@ impl EventConsumer {
         queue_name: String,
         retry_strategy: Arc<RetryStrategy>,
         circuit_breaker: Arc<CircuitBreaker>,
+        idempotency_cache_size: usize,
     ) -> Self {
         Self {
             processor_service,
@@ -52,6 +60,7 @@ impl EventConsumer {
             poison_messages: Arc::new(Mutex::new(HashMap::new())),
             stats: Arc::new(Mutex::new(ConsumerStats::default())),
             is_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            idempotency_cache_size,
         }
     }
 
@@ -85,6 +94,7 @@ impl EventConsumer {
         let ch = self.channel.clone();
         let queue = self.queue_name.clone();
         let running = self.is_running.clone();
+        let idempotency_cache_size = self.idempotency_cache_size;
 
         tokio::spawn(async move {
             use futures::StreamExt;
@@ -101,7 +111,10 @@ impl EventConsumer {
                         if !cb.allow_request() {
                             tracing::warn!("Circuit breaker open, requeuing message");
                             if let Err(e) = delivery
-                                .nack(BasicNackOptions { requeue: true, ..Default::default() })
+                                .nack(BasicNackOptions {
+                                    requeue: true,
+                                    ..Default::default()
+                                })
                                 .await
                             {
                                 tracing::error!("Failed to nack message: {}", e);
@@ -109,48 +122,47 @@ impl EventConsumer {
                             continue;
                         }
 
-                        let content = String::from_utf8_lossy(&delivery.data).to_string();
-
-                        // Parse JSON
-                        let message_data: serde_json::Value = match serde_json::from_str(&content) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::error!("Message parsing failed: {}", e);
+                        // Deserialize directly to typed HitEvent — no Value intermediate.
+                        let hit_event: HitEvent = match serde_json::from_slice(&delivery.data) {
+                            Ok(e) => e,
+                            Err(err) => {
+                                tracing::error!(
+                                    error = %err,
+                                    raw = %String::from_utf8_lossy(&delivery.data),
+                                    "Failed to deserialize HitEvent — discarding message"
+                                );
                                 let _ = delivery.ack(BasicAckOptions::default()).await;
                                 continue;
                             }
                         };
 
-                        // Validate message type
-                        let msg_type = message_data
-                            .get("type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if msg_type != "API_HIT" {
-                            tracing::error!("Unknown event type: {}", msg_type);
+                        if hit_event.event_type != "API_HIT" {
+                            tracing::error!(
+                                event_type = %hit_event.event_type,
+                                "Unknown event type — discarding"
+                            );
                             let _ = delivery.ack(BasicAckOptions::default()).await;
                             continue;
                         }
 
-                        // Extract message ID
+                        let event_id = hit_event.data.event_id.clone();
+
+                        // Extract message ID from AMQP properties or event payload
                         let message_id = delivery
                             .properties
                             .message_id()
                             .as_ref()
                             .map(|s| s.to_string())
-                            .or_else(|| {
-                                message_data
-                                    .get("messageId")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string())
-                            })
-                            .unwrap_or_else(|| "unknown".to_string());
+                            .unwrap_or_else(|| event_id.clone());
 
                         // Idempotency check
                         {
                             let ids_guard = ids.lock().await;
                             if ids_guard.contains(&message_id) {
-                                tracing::debug!(message_id = %message_id, "Duplicate message skipped");
+                                tracing::debug!(
+                                    message_id = %message_id,
+                                    "Duplicate message skipped"
+                                );
                                 let _ = delivery.ack(BasicAckOptions::default()).await;
                                 continue;
                             }
@@ -169,50 +181,56 @@ impl EventConsumer {
                             })
                             .unwrap_or(0);
 
-                        let event_data = message_data
-                            .get("data")
-                            .cloned()
-                            .unwrap_or(serde_json::json!({}));
-
-                        match processor.process_event(event_data).await {
+                        // Pass typed HitEventData directly to the processor
+                        match processor.process_event(hit_event.data).await {
                             Ok(()) => {
                                 let _ = delivery.ack(BasicAckOptions::default()).await;
                                 cb.on_success();
-                                let mut s = stats.lock().await;
-                                s.processed += 1;
 
-                                // Track processed IDs (bounded at 100k)
-                                let mut id_set = ids.lock().await;
-                                id_set.insert(message_id);
-                                if id_set.len() > 100_000 {
-                                    if let Some(first) = id_set.iter().next().cloned() {
-                                        id_set.remove(&first);
+                                {
+                                    let mut s = stats.lock().await;
+                                    s.processed += 1;
+                                }
+
+                                // Track processed IDs (bounded by config to cap memory)
+                                {
+                                    let mut id_set = ids.lock().await;
+                                    id_set.insert(message_id.clone());
+                                    if id_set.len() > idempotency_cache_size {
+                                        if let Some(first) = id_set.iter().next().cloned() {
+                                            id_set.remove(&first);
+                                        }
                                     }
                                 }
 
-                                poison.lock().await.remove(msg_type);
+                                poison.lock().await.remove(&message_id);
                             }
                             Err(e) => {
                                 cb.on_failure();
-                                let mut s = stats.lock().await;
-                                s.failed += 1;
+                                {
+                                    let mut s = stats.lock().await;
+                                    s.failed += 1;
+                                }
                                 let err_msg = format!("{}", e);
 
                                 // Poison message tracking
                                 {
                                     let mut pm = poison.lock().await;
-                                    let count = pm.entry(msg_type.to_string()).or_insert(0);
+                                    let count =
+                                        pm.entry(message_id.clone()).or_insert(0);
                                     *count += 1;
                                     if *count >= 10 {
                                         tracing::error!(
-                                            event_type = %msg_type,
+                                            message_id = %message_id,
                                             consecutive_failures = *count,
                                             "Poison message pattern detected"
                                         );
                                     }
                                 }
 
-                                if !is_retryable(&err_msg) || !retry.should_retry(retry_count) {
+                                if !is_retryable(&err_msg)
+                                    || !retry.should_retry(retry_count)
+                                {
                                     // Route to DLQ
                                     let dlq_name = format!("{}.dlq", queue);
                                     let ch_guard = ch.lock().await;
@@ -224,23 +242,45 @@ impl EventConsumer {
                                         };
 
                                         let mut headers = FieldTable::default();
-                                        headers.insert("x-dlq-reason".into(), lapin::types::AMQPValue::LongString(reason.into()));
-                                        headers.insert("x-dlq-error".into(), lapin::types::AMQPValue::LongString(err_msg.clone().into()));
-                                        headers.insert("x-dlq-timestamp".into(), lapin::types::AMQPValue::LongLongInt(chrono::Utc::now().timestamp()));
+                                        headers.insert(
+                                            "x-dlq-reason".into(),
+                                            lapin::types::AMQPValue::LongString(
+                                                reason.into(),
+                                            ),
+                                        );
+                                        headers.insert(
+                                            "x-dlq-error".into(),
+                                            lapin::types::AMQPValue::LongString(
+                                                err_msg.clone().into(),
+                                            ),
+                                        );
+                                        headers.insert(
+                                            "x-dlq-timestamp".into(),
+                                            lapin::types::AMQPValue::LongLongInt(
+                                                chrono::Utc::now().timestamp(),
+                                            ),
+                                        );
 
                                         let props = BasicProperties::default()
                                             .with_delivery_mode(2)
                                             .with_headers(headers);
 
                                         let _ = channel
-                                            .basic_publish("", &dlq_name, BasicPublishOptions::default(), &delivery.data, props)
+                                            .basic_publish(
+                                                "",
+                                                &dlq_name,
+                                                BasicPublishOptions::default(),
+                                                &delivery.data,
+                                                props,
+                                            )
                                             .await;
                                     }
 
                                     let _ = delivery.ack(BasicAckOptions::default()).await;
+                                    let mut s = stats.lock().await;
                                     s.dlq_routed += 1;
                                 } else {
-                                    // Schedule retry with backoff
+                                    // Schedule retry with exponential backoff
                                     let delay = retry.delay(retry_count);
                                     let ch_clone = ch.clone();
                                     let queue_clone = queue.clone();
@@ -248,27 +288,50 @@ impl EventConsumer {
                                     let new_retry = retry_count + 1;
 
                                     tokio::spawn(async move {
-                                        tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+                                        tokio::time::sleep(
+                                            tokio::time::Duration::from_millis(delay),
+                                        )
+                                        .await;
                                         let ch_guard = ch_clone.lock().await;
                                         if let Some(channel) = ch_guard.as_ref() {
                                             let mut headers = FieldTable::default();
-                                            headers.insert("x-retry-count".into(), lapin::types::AMQPValue::LongInt(new_retry as i32));
-                                            headers.insert("x-retry-timestamp".into(), lapin::types::AMQPValue::LongLongInt(chrono::Utc::now().timestamp()));
+                                            headers.insert(
+                                                "x-retry-count".into(),
+                                                lapin::types::AMQPValue::LongInt(
+                                                    new_retry as i32,
+                                                ),
+                                            );
+                                            headers.insert(
+                                                "x-retry-timestamp".into(),
+                                                lapin::types::AMQPValue::LongLongInt(
+                                                    chrono::Utc::now().timestamp(),
+                                                ),
+                                            );
 
                                             let props = BasicProperties::default()
                                                 .with_delivery_mode(2)
                                                 .with_headers(headers);
 
                                             if let Err(e) = channel
-                                                .basic_publish("", &queue_clone, BasicPublishOptions::default(), &data, props)
+                                                .basic_publish(
+                                                    "",
+                                                    &queue_clone,
+                                                    BasicPublishOptions::default(),
+                                                    &data,
+                                                    props,
+                                                )
                                                 .await
                                             {
-                                                tracing::error!("Failed to schedule retry: {}", e);
+                                                tracing::error!(
+                                                    "Failed to schedule retry: {}",
+                                                    e
+                                                );
                                             }
                                         }
                                     });
 
                                     let _ = delivery.ack(BasicAckOptions::default()).await;
+                                    let mut s = stats.lock().await;
                                     s.retried += 1;
                                 }
                             }

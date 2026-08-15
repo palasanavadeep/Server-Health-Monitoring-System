@@ -1,13 +1,15 @@
-use chrono::Utc;
 use lapin::{options::BasicPublishOptions, BasicProperties, Channel};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::config::settings::RabbitMqConfig;
+use crate::domain::ingest::HitEvent;
 use crate::resilience::circuit_breaker::CircuitBreaker;
 use crate::resilience::retry::{is_retryable, RetryStrategy};
 
-/// Event producer — publishes events to RabbitMQ with circuit breaker and retry.
+/// Event producer — publishes typed `HitEvent` messages to RabbitMQ.
+///
+/// Serialization happens once per publish call, not once per retry attempt.
 pub struct EventProducer {
     channel: Arc<Mutex<Option<Channel>>>,
     config: RabbitMqConfig,
@@ -31,30 +33,24 @@ impl EventProducer {
     }
 
     /// Publish an API hit event.
-    /// Returns `true` if published, `false` if rejected by circuit breaker.
+    ///
+    /// Serializes the typed `HitEvent` **once** before entering the retry loop,
+    /// then reuses the same byte buffer on every retry attempt.
+    ///
+    /// Returns `true` if published, `false` if rejected by the circuit breaker.
     pub async fn publish_api_hit(
         &self,
-        event_data: serde_json::Value,
+        event: HitEvent,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         if !self.circuit_breaker.allow_request() {
             tracing::warn!("Circuit breaker OPEN, rejecting publish");
             return Ok(false);
         }
 
-        let event_id = event_data
-            .get("eventId")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let event_id = event.data.event_id.clone();
 
-        let message = serde_json::json!({
-            "type": "API_HIT",
-            "data": event_data,
-            "publishedAt": Utc::now().to_rfc3339(),
-            "attempt": 1
-        });
-
-        let payload = serde_json::to_vec(&message)?;
+        // Serialize once — reused for every retry without re-allocating.
+        let payload = serde_json::to_vec(&event)?;
         let mut attempt: u32 = 0;
 
         loop {
@@ -98,7 +94,7 @@ impl EventProducer {
             .with_delivery_mode(2) // persistent
             .with_content_type("application/json".into())
             .with_message_id(event_id.into())
-            .with_timestamp(Utc::now().timestamp() as u64);
+            .with_timestamp(chrono::Utc::now().timestamp() as u64);
 
         channel
             .basic_publish(
@@ -114,7 +110,7 @@ impl EventProducer {
         Ok(())
     }
 
-    /// Update the channel (for reconnection scenarios).
+    /// Replace the channel (for reconnection scenarios).
     pub async fn set_channel(&self, channel: Channel) {
         let mut guard = self.channel.lock().await;
         *guard = Some(channel);

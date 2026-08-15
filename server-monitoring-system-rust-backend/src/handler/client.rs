@@ -1,31 +1,68 @@
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse};
+use serde_json::json;
 
 use crate::app_state::AppState;
+use crate::domain::client::{
+    CreateApiKeyRequest, CreateClientRequest, CreateClientUserRequest, RotateApiKeyRequest,
+    UpdateApiKeyRequest,
+};
 use crate::middleware::authenticate::AuthenticatedUser;
 use crate::util::response::ResponseFormatter;
+
+// ── Helper ─────────────────────────────────────────────────────────────────────
+
+fn get_user(req: &HttpRequest) -> Option<AuthenticatedUser> {
+    req.extensions().get::<AuthenticatedUser>().cloned()
+}
+
+macro_rules! require_user {
+    ($req:expr) => {
+        match get_user($req) {
+            Some(u) => u,
+            None => {
+                return HttpResponse::Unauthorized().json(ResponseFormatter::error(
+                    "Authentication required",
+                    401,
+                    None,
+                ))
+            }
+        }
+    };
+}
+
+// ── Handlers ───────────────────────────────────────────────────────────────────
 
 /// POST /api/admin/clients/onboard
 pub async fn create_client(
     state: web::Data<AppState>,
     req: HttpRequest,
-    body: web::Json<serde_json::Value>,
+    body: web::Json<CreateClientRequest>,
 ) -> HttpResponse {
-    let user = match req.extensions().get::<AuthenticatedUser>() {
-        Some(u) => u.clone(),
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
+    let user = require_user!(&req);
 
-    match state.auth_service.check_super_admin_permissions(&user.user_id).await {
+    match state
+        .auth_service
+        .check_super_admin_permissions(&user.user_id)
+        .await
+    {
         Ok(true) => {}
-        Ok(false) => return HttpResponse::Forbidden().json(ResponseFormatter::error("Access denied", 403, None)),
+        Ok(false) => {
+            return HttpResponse::Forbidden()
+                .json(ResponseFormatter::error("Access denied", 403, None))
+        }
         Err(e) => return e.to_response(),
     }
 
-    match state.client_service.create_client(body.into_inner(), &user.user_id).await {
-        Ok(client) => {
-            let value = serde_json::to_value(&client).unwrap_or_default();
-            HttpResponse::Created().json(ResponseFormatter::success(value, "Client created successfully", 201))
-        }
+    match state
+        .client_service
+        .create_client(body.into_inner(), &user.user_id)
+        .await
+    {
+        Ok(client) => HttpResponse::Created().json(ResponseFormatter::success(
+            json!(client),
+            "Client created successfully",
+            201,
+        )),
         Err(e) => e.to_response(),
     }
 }
@@ -35,25 +72,21 @@ pub async fn create_client_user(
     state: web::Data<AppState>,
     req: HttpRequest,
     path: web::Path<String>,
-    body: web::Json<serde_json::Value>,
+    body: web::Json<CreateClientUserRequest>,
 ) -> HttpResponse {
-    let user = match req.extensions().get::<AuthenticatedUser>() {
-        Some(u) => u.clone(),
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
-
+    let user = require_user!(&req);
     let client_id = path.into_inner();
 
-    match state.client_service.create_client_user(
-        &client_id,
-        body.into_inner(),
-        &user.role,
-        user.client_id.as_deref(),
-    ).await {
-        Ok(user_resp) => {
-            let value = serde_json::to_value(&user_resp).unwrap_or_default();
-            HttpResponse::Created().json(ResponseFormatter::success(value, "Client user created successfully", 201))
-        }
+    match state
+        .client_service
+        .create_client_user(&client_id, body.into_inner(), &user.role, user.client_id.as_deref())
+        .await
+    {
+        Ok(user_resp) => HttpResponse::Created().json(ResponseFormatter::success(
+            json!(user_resp),
+            "Client user created successfully",
+            201,
+        )),
         Err(e) => e.to_response(),
     }
 }
@@ -63,26 +96,27 @@ pub async fn create_api_key(
     state: web::Data<AppState>,
     req: HttpRequest,
     path: web::Path<String>,
-    body: web::Json<serde_json::Value>,
+    body: web::Json<CreateApiKeyRequest>,
 ) -> HttpResponse {
-    let user = match req.extensions().get::<AuthenticatedUser>() {
-        Some(u) => u.clone(),
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
-
+    let user = require_user!(&req);
     let client_id = path.into_inner();
 
-    match state.client_service.create_api_key(
-        &client_id,
-        body.into_inner(),
-        &user.role,
-        user.client_id.as_deref(),
-        &user.user_id,
-    ).await {
-        Ok(api_key) => {
-            let value = serde_json::to_value(&api_key).unwrap_or_default();
-            HttpResponse::Created().json(ResponseFormatter::success(value, "API key created successfully", 201))
-        }
+    match state
+        .client_service
+        .create_api_key(
+            &client_id,
+            body.into_inner(),
+            &user.role,
+            user.client_id.as_deref(),
+            &user.user_id,
+        )
+        .await
+    {
+        Ok(api_key) => HttpResponse::Created().json(ResponseFormatter::success(
+            json!(api_key),
+            "API key created successfully",
+            201,
+        )),
         Err(e) => e.to_response(),
     }
 }
@@ -93,18 +127,19 @@ pub async fn get_client_api_keys(
     req: HttpRequest,
     path: web::Path<String>,
 ) -> HttpResponse {
-    let user = match req.extensions().get::<AuthenticatedUser>() {
-        Some(u) => u.clone(),
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
-
+    let user = require_user!(&req);
     let client_id = path.into_inner();
 
-    match state.client_service.get_client_api_keys(&client_id, &user.role, user.client_id.as_deref()).await {
-        Ok(keys) => {
-            let value = serde_json::to_value(&keys).unwrap_or_default();
-            HttpResponse::Ok().json(ResponseFormatter::success(value, "API key fetched successfully", 200))
-        }
+    match state
+        .client_service
+        .get_client_api_keys(&client_id, &user.role, user.client_id.as_deref())
+        .await
+    {
+        Ok(keys) => HttpResponse::Ok().json(ResponseFormatter::success(
+            json!(keys),
+            "API key fetched successfully",
+            200,
+        )),
         Err(e) => e.to_response(),
     }
 }
@@ -120,21 +155,29 @@ pub async fn update_api_key(
     state: web::Data<AppState>,
     req: HttpRequest,
     path: web::Path<ClientKeyPath>,
-    body: web::Json<serde_json::Value>,
+    body: web::Json<UpdateApiKeyRequest>,
 ) -> HttpResponse {
-    let user = match req.extensions().get::<AuthenticatedUser>() {
-        Some(u) => u.clone(),
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
+    let user = require_user!(&req);
     let params = path.into_inner();
-    match state.client_service.update_api_key(
-        &params.client_id, &params.key_id, body.into_inner(), &user.role, user.client_id.as_deref(),
-    ).await {
-        Ok(Some(updated)) => {
-            let value = serde_json::to_value(&updated).unwrap_or_default();
-            HttpResponse::Ok().json(ResponseFormatter::success(value, "API key updated successfully", 200))
-        }
-        Ok(None) => HttpResponse::NotFound().json(ResponseFormatter::error("API key not found", 404, None)),
+
+    match state
+        .client_service
+        .update_api_key(
+            &params.client_id,
+            &params.key_id,
+            body.into_inner(),
+            &user.role,
+            user.client_id.as_deref(),
+        )
+        .await
+    {
+        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::success(
+            json!(updated),
+            "API key updated successfully",
+            200,
+        )),
+        Ok(None) => HttpResponse::NotFound()
+            .json(ResponseFormatter::error("API key not found", 404, None)),
         Err(e) => e.to_response(),
     }
 }
@@ -145,15 +188,24 @@ pub async fn delete_api_key(
     req: HttpRequest,
     path: web::Path<ClientKeyPath>,
 ) -> HttpResponse {
-    let user = match req.extensions().get::<AuthenticatedUser>() {
-        Some(u) => u.clone(),
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
+    let user = require_user!(&req);
     let params = path.into_inner();
-    match state.client_service.delete_api_key(
-        &params.client_id, &params.key_id, &user.role, user.client_id.as_deref(),
-    ).await {
-        Ok(_) => HttpResponse::Ok().json(ResponseFormatter::success(serde_json::json!({}), "API key deleted successfully", 200)),
+
+    match state
+        .client_service
+        .delete_api_key(
+            &params.client_id,
+            &params.key_id,
+            &user.role,
+            user.client_id.as_deref(),
+        )
+        .await
+    {
+        Ok(_) => HttpResponse::Ok().json(ResponseFormatter::success(
+            json!({}),
+            "API key deleted successfully",
+            200,
+        )),
         Err(e) => e.to_response(),
     }
 }
@@ -164,19 +216,27 @@ pub async fn deactivate_api_key(
     req: HttpRequest,
     path: web::Path<ClientKeyPath>,
 ) -> HttpResponse {
-    let user = match req.extensions().get::<AuthenticatedUser>() {
-        Some(u) => u.clone(),
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
+    let user = require_user!(&req);
     let params = path.into_inner();
-    match state.client_service.toggle_api_key_status(
-        &params.client_id, &params.key_id, false, &user.role, user.client_id.as_deref(),
-    ).await {
-        Ok(Some(updated)) => {
-            let value = serde_json::to_value(&updated).unwrap_or_default();
-            HttpResponse::Ok().json(ResponseFormatter::success(value, "API key deactivated successfully", 200))
-        }
-        Ok(None) => HttpResponse::NotFound().json(ResponseFormatter::error("API key not found", 404, None)),
+
+    match state
+        .client_service
+        .toggle_api_key_status(
+            &params.client_id,
+            &params.key_id,
+            false,
+            &user.role,
+            user.client_id.as_deref(),
+        )
+        .await
+    {
+        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::success(
+            json!(updated),
+            "API key deactivated successfully",
+            200,
+        )),
+        Ok(None) => HttpResponse::NotFound()
+            .json(ResponseFormatter::error("API key not found", 404, None)),
         Err(e) => e.to_response(),
     }
 }
@@ -187,19 +247,27 @@ pub async fn activate_api_key(
     req: HttpRequest,
     path: web::Path<ClientKeyPath>,
 ) -> HttpResponse {
-    let user = match req.extensions().get::<AuthenticatedUser>() {
-        Some(u) => u.clone(),
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
+    let user = require_user!(&req);
     let params = path.into_inner();
-    match state.client_service.toggle_api_key_status(
-        &params.client_id, &params.key_id, true, &user.role, user.client_id.as_deref(),
-    ).await {
-        Ok(Some(updated)) => {
-            let value = serde_json::to_value(&updated).unwrap_or_default();
-            HttpResponse::Ok().json(ResponseFormatter::success(value, "API key activated successfully", 200))
-        }
-        Ok(None) => HttpResponse::NotFound().json(ResponseFormatter::error("API key not found", 404, None)),
+
+    match state
+        .client_service
+        .toggle_api_key_status(
+            &params.client_id,
+            &params.key_id,
+            true,
+            &user.role,
+            user.client_id.as_deref(),
+        )
+        .await
+    {
+        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::success(
+            json!(updated),
+            "API key activated successfully",
+            200,
+        )),
+        Ok(None) => HttpResponse::NotFound()
+            .json(ResponseFormatter::error("API key not found", 404, None)),
         Err(e) => e.to_response(),
     }
 }
@@ -209,21 +277,29 @@ pub async fn rotate_api_key(
     state: web::Data<AppState>,
     req: HttpRequest,
     path: web::Path<ClientKeyPath>,
-    body: web::Json<serde_json::Value>,
+    body: web::Json<RotateApiKeyRequest>,
 ) -> HttpResponse {
-    let user = match req.extensions().get::<AuthenticatedUser>() {
-        Some(u) => u.clone(),
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
+    let user = require_user!(&req);
     let params = path.into_inner();
-    match state.client_service.rotate_api_key(
-        &params.client_id, &params.key_id, body.into_inner(), &user.role, user.client_id.as_deref(),
-    ).await {
-        Ok(Some(updated)) => {
-            let value = serde_json::to_value(&updated).unwrap_or_default();
-            HttpResponse::Ok().json(ResponseFormatter::success(value, "API key rotated successfully", 200))
-        }
-        Ok(None) => HttpResponse::NotFound().json(ResponseFormatter::error("API key not found", 404, None)),
+
+    match state
+        .client_service
+        .rotate_api_key(
+            &params.client_id,
+            &params.key_id,
+            body.into_inner(),
+            &user.role,
+            user.client_id.as_deref(),
+        )
+        .await
+    {
+        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::success(
+            json!(updated),
+            "API key rotated successfully",
+            200,
+        )),
+        Ok(None) => HttpResponse::NotFound()
+            .json(ResponseFormatter::error("API key not found", 404, None)),
         Err(e) => e.to_response(),
     }
 }
@@ -234,18 +310,24 @@ pub async fn get_api_key(
     req: HttpRequest,
     path: web::Path<ClientKeyPath>,
 ) -> HttpResponse {
-    let user = match req.extensions().get::<AuthenticatedUser>() {
-        Some(u) => u.clone(),
-        None => return HttpResponse::Unauthorized().json(ResponseFormatter::error("Authentication required", 401, None)),
-    };
+    let user = require_user!(&req);
     let params = path.into_inner();
-    match state.client_service.get_api_key_details(
-        &params.client_id, &params.key_id, &user.role, user.client_id.as_deref(),
-    ).await {
-        Ok(api_key) => {
-            let value = serde_json::to_value(&api_key).unwrap_or_default();
-            HttpResponse::Ok().json(ResponseFormatter::success(value, "API key details retrieved successfully", 200))
-        }
+
+    match state
+        .client_service
+        .get_api_key_details(
+            &params.client_id,
+            &params.key_id,
+            &user.role,
+            user.client_id.as_deref(),
+        )
+        .await
+    {
+        Ok(api_key) => HttpResponse::Ok().json(ResponseFormatter::success(
+            json!(api_key),
+            "API key details retrieved successfully",
+            200,
+        )),
         Err(e) => e.to_response(),
     }
 }
