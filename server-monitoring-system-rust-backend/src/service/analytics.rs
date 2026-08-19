@@ -1,9 +1,11 @@
 use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 
-use crate::domain::metrics::{
-    ApiMetricsEntryResponse, DashboardData, EndpointStatResponse, OverallStatsResponse,
-    PaginatedApiMetricsResponse, Pagination, TimeRange, TimeSeriesEntryResponse,
+
+
+use crate::dto::response::analytics::{
+    ApiMetricsEntryResponse, DashboardResponse, EndpointStatResponse,
+    OverallStatsResponse, TimeRange, TimeSeriesEntryResponse,
 };
 use crate::error::app_error::AppError;
 use crate::repository::metrics_repo::MetricsRepository;
@@ -140,7 +142,7 @@ impl AnalyticsService {
         client_id: &str,
         page: i64,
         limit: i64,
-    ) -> Result<PaginatedApiMetricsResponse, AppError> {
+    ) -> Result<(Vec<ApiMetricsEntryResponse>, i64, i64, i64), AppError> {
         let parsed_page = page.max(1);
         let parsed_limit = limit.clamp(1, 100);
         let offset = (parsed_page - 1) * parsed_limit;
@@ -150,7 +152,7 @@ impl AnalyticsService {
             .get_client_apis_metrics(client_id, parsed_limit, offset)
             .await?;
 
-        let total_pages = if parsed_limit > 0 {
+        let _total_pages = if parsed_limit > 0 {
             (total_count as f64 / parsed_limit as f64).ceil() as i64
         } else {
             0
@@ -179,15 +181,7 @@ impl AnalyticsService {
             })
             .collect();
 
-        Ok(PaginatedApiMetricsResponse {
-            items,
-            pagination: Pagination {
-                page: parsed_page,
-                limit: parsed_limit,
-                total_count,
-                total_pages,
-            },
-        })
+        Ok((items, total_count, parsed_page, parsed_limit))
     }
 
     /// Get all dashboard data in a single parallel fetch.
@@ -196,14 +190,14 @@ impl AnalyticsService {
         client_id: Option<&str>,
         start_time: Option<i64>,
         end_time: Option<i64>,
-    ) -> DashboardData {
+    ) -> DashboardResponse {
         let stats_fut = self.get_overall_stats(client_id, start_time, end_time);
         let top_fut = self.get_top_endpoints(client_id, 5, start_time);
         let ts_fut = self.get_time_series(client_id, start_time, end_time, 24);
 
         let (stats_res, top_res, ts_res) = tokio::join!(stats_fut, top_fut, ts_fut);
 
-        DashboardData {
+        DashboardResponse {
             stats: stats_res.ok(),
             top_endpoints: top_res.ok(),
             recent_activity: ts_res.ok(),

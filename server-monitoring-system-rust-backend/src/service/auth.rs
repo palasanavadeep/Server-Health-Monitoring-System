@@ -1,19 +1,19 @@
+use bson::doc;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, EncodingKey, Header};
-use bson::doc;
 use std::sync::Arc;
 
 use crate::config::settings::AppConfig;
 use crate::domain::role::Role;
-use crate::domain::user::{JwtClaims, User, UserResponse};
+use crate::domain::user::{JwtClaims, User};
+use crate::dto::response::auth::UserResponse;
 use crate::error::app_error::AppError;
 use crate::repository::user_repo::UserRepository;
 use crate::util::security::SecurityUtils;
 
 /// Authentication service — handles user registration, login, and profile management.
 ///
-/// Encapsulates all auth business logic. Receives a trait-object repository
-/// for testability via dependency injection.
+/// Encapsulates all auth business logic using pure domain models and DTOs.
 pub struct AuthService {
     user_repository: Arc<dyn UserRepository>,
     config: AppConfig,
@@ -28,7 +28,6 @@ impl AuthService {
     }
 
     /// Onboard the first super admin (only when no users exist).
-    /// Preserves original behavior exactly.
     pub async fn onboard_super_admin(
         &self,
         username: &str,
@@ -101,7 +100,6 @@ impl AuthService {
     }
 
     /// Login and return JWT token.
-    /// Note: preserves the intentional typo "Invliad Credentials".
     pub async fn login(
         &self,
         email: &str,
@@ -129,7 +127,7 @@ impl AuthService {
             return Err(AppError::unauthorized("Invliad Credentials"));
         }
 
-        let user_id_str = user.id.map(|id| id.to_hex()).unwrap_or_default();
+        let user_id_str = user.id.clone().unwrap_or_default();
         self.user_repository.update_last_login(&user_id_str).await?;
 
         let token = self.generate_token(&user)?;
@@ -194,14 +192,14 @@ impl AuthService {
         Ok(user.role == Role::SuperAdmin)
     }
 
-    /// Access the service configuration (used by handlers for cookie settings).
+    /// Access the service configuration.
     pub fn config(&self) -> &AppConfig {
         &self.config
     }
 
     /// Generate a JWT token for a user.
     fn generate_token(&self, user: &User) -> Result<String, AppError> {
-        let user_id = user.id.map(|id| id.to_hex()).unwrap_or_default();
+        let user_id = user.id.clone().unwrap_or_default();
 
         let now = Utc::now();
         let expires_in = self.parse_expires_in(&self.config.jwt.expires_in);
@@ -212,7 +210,7 @@ impl AuthService {
             email: user.email.clone(),
             username: user.username.clone(),
             role: user.role.to_string(),
-            client_id: user.client_id.map(|id| id.to_hex()),
+            client_id: user.client_id.clone(),
             iat: now.timestamp(),
             exp: exp.timestamp(),
         };
@@ -226,7 +224,7 @@ impl AuthService {
         Ok(token)
     }
 
-    /// Parse JWT expires_in string (e.g., "24h", "7d") to Duration.
+    /// Parse JWT expires_in string to Duration.
     fn parse_expires_in(&self, expires_in: &str) -> Duration {
         if expires_in.ends_with('h') {
             let hours: i64 = expires_in.trim_end_matches('h').parse().unwrap_or(24);

@@ -1,20 +1,19 @@
-use bson::oid::ObjectId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Raw API hit event stored in MongoDB `apihits` collection.
+/// Raw API hit event entity (pure domain model, no DB-specific types).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiHit {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 
     pub event_id: String,
 
-    pub client_id: ObjectId,
+    pub client_id: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub api_key_id: Option<ObjectId>,
+    pub api_key_id: Option<String>,
 
     pub service_name: String,
     pub endpoint: String,

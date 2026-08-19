@@ -120,10 +120,8 @@ pub async fn get_stats(
     let user = match get_user(&req) {
         Some(u) => u,
         None => {
-            return HttpResponse::Unauthorized().json(ResponseFormatter::error(
+            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
                 "Authentication required",
-                401,
-                None,
             ))
         }
     };
@@ -144,10 +142,9 @@ pub async fn get_stats(
         .get_overall_stats(client_id.as_deref(), start, end)
         .await
     {
-        Ok(stats) => HttpResponse::Ok().json(ResponseFormatter::success(
-            serde_json::json!(stats),
+        Ok(stats) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            stats,
             "Statistics retrieved successfully",
-            200,
         )),
         Err(e) => e.to_response(),
     }
@@ -162,10 +159,8 @@ pub async fn get_dashboard(
     let user = match get_user(&req) {
         Some(u) => u,
         None => {
-            return HttpResponse::Unauthorized().json(ResponseFormatter::error(
+            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
                 "Authentication required",
-                401,
-                None,
             ))
         }
     };
@@ -187,10 +182,9 @@ pub async fn get_dashboard(
         .get_dashboard(client_id.as_deref(), start, end)
         .await;
 
-    HttpResponse::Ok().json(ResponseFormatter::success(
-        serde_json::json!(dashboard),
+    HttpResponse::Ok().json(ResponseFormatter::ok(
+        dashboard,
         "Dashboard data retrieved successfully",
-        200,
     ))
 }
 
@@ -203,13 +197,13 @@ pub async fn get_apis_metrics(
     let user = match get_user(&req) {
         Some(u) => u,
         None => {
-            return HttpResponse::Unauthorized().json(ResponseFormatter::error(
+            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
                 "Authentication required",
-                401,
-                None,
             ))
         }
     };
+
+
 
     let client_id = match resolve_client_id(&state, &user, query.client_id.as_deref()).await {
         Ok(c) => c,
@@ -220,7 +214,7 @@ pub async fn get_apis_metrics(
         Some(id) => id,
         None => {
             return HttpResponse::BadRequest()
-                .json(ResponseFormatter::error("clientId is required", 400, None))
+                .json(ResponseFormatter::bad_request("clientId is required", None))
         }
     };
 
@@ -232,11 +226,9 @@ pub async fn get_apis_metrics(
         .get_client_apis_metrics(&client_id, page, limit)
         .await
     {
-        Ok(metrics) => HttpResponse::Ok().json(ResponseFormatter::success(
-            serde_json::json!(metrics),
-            "API metrics retrieved successfully",
-            200,
-        )),
+        Ok((items, total, current_page, page_limit)) => HttpResponse::Ok().json(
+            ResponseFormatter::paged(items, current_page, page_limit, total),
+        ),
         Err(e) => e.to_response(),
     }
 }

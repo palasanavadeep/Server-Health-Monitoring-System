@@ -1,9 +1,12 @@
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::domain::ingest::{HitEvent, HitEventData, IngestHitRequest, IngestResult, IngestStatus};
+use crate::domain::ingest::{HitEvent, HitEventData};
+use crate::dto::request::ingest::IngestHitRequest;
+use crate::dto::response::ingest::{IngestResponse, IngestStatus};
 use crate::error::app_error::AppError;
 use crate::messaging::producer::EventProducer;
+
 
 /// Ingest service — validates and publishes API hit events to the message queue.
 ///
@@ -25,7 +28,7 @@ impl IngestService {
     pub async fn ingest_api_hit(
         &self,
         req: IngestHitRequest,
-    ) -> Result<IngestResult, AppError> {
+    ) -> Result<IngestResponse, AppError> {
         self.validate(&req)?;
 
         let event_id = Uuid::new_v4().to_string();
@@ -53,7 +56,7 @@ impl IngestService {
         match self.event_producer.publish_api_hit(envelope).await {
             Ok(true) => {
                 tracing::info!(event_id = %event_id, "API hit ingested");
-                Ok(IngestResult {
+                Ok(IngestResponse {
                     event_id,
                     status: IngestStatus::Queued,
                     timestamp: now,
@@ -62,7 +65,7 @@ impl IngestService {
             }
             Ok(false) => {
                 tracing::warn!(event_id = %event_id, "API hit rejected by circuit breaker");
-                Ok(IngestResult {
+                Ok(IngestResponse {
                     event_id,
                     status: IngestStatus::Rejected,
                     timestamp: now,

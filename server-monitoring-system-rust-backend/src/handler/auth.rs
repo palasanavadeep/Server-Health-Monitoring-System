@@ -1,6 +1,6 @@
 use actix_web::{
+    cookie::{time::Duration as CookieDuration, Cookie, SameSite},
     web, HttpMessage, HttpRequest, HttpResponse,
-    cookie::{Cookie, SameSite, time::Duration as CookieDuration},
 };
 use validator::Validate;
 
@@ -8,7 +8,9 @@ use crate::app_state::AppState;
 use crate::domain::role::Role;
 use crate::middleware::authenticate::AuthenticatedUser;
 use crate::util::response::ResponseFormatter;
-use crate::util::validation::{LoginRequest, OnboardSuperAdminRequest, RegisterRequest, UpdateProfileRequest};
+use crate::util::validation::{
+    LoginRequest, OnboardSuperAdminRequest, RegisterRequest, UpdateProfileRequest,
+};
 
 /// POST /api/auth/onboard-super-admin
 pub async fn onboard_super_admin(
@@ -16,9 +18,9 @@ pub async fn onboard_super_admin(
     body: web::Json<OnboardSuperAdminRequest>,
 ) -> HttpResponse {
     if let Err(e) = body.validate() {
-        return HttpResponse::BadRequest().json(
-            ResponseFormatter::validation_error(Some(serde_json::to_value(e.to_string()).unwrap())),
-        );
+        return HttpResponse::BadRequest().json(ResponseFormatter::validation_error(Some(
+            serde_json::to_value(e.to_string()).unwrap(),
+        )));
     }
 
     match state
@@ -26,12 +28,10 @@ pub async fn onboard_super_admin(
         .onboard_super_admin(&body.username, &body.email, &body.password)
         .await
     {
-        Ok(user) => {
-            let user_value = serde_json::to_value(&user).unwrap_or_default();
-            HttpResponse::Created().json(
-                ResponseFormatter::success(user_value, "Super admin registered successfully", 201),
-            )
-        }
+        Ok(user) => HttpResponse::Created().json(ResponseFormatter::created(
+            user,
+            "Super admin registered successfully",
+        )),
         Err(e) => e.to_response(),
     }
 }
@@ -43,23 +43,22 @@ pub async fn register(
     body: web::Json<RegisterRequest>,
 ) -> HttpResponse {
     if let Err(e) = body.validate() {
-        return HttpResponse::BadRequest().json(
-            ResponseFormatter::validation_error(Some(serde_json::to_value(e.to_string()).unwrap())),
-        );
+        return HttpResponse::BadRequest().json(ResponseFormatter::validation_error(Some(
+            serde_json::to_value(e.to_string()).unwrap(),
+        )));
     }
 
     let user = match req.extensions().get::<AuthenticatedUser>() {
         Some(u) => u.clone(),
         None => {
-            return HttpResponse::Unauthorized().json(
-                ResponseFormatter::error("Authentication required", 401, None),
-            );
+            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
+                "Authentication required",
+            ));
         }
     };
 
     if user.role != Role::SuperAdmin.as_str() {
-        return HttpResponse::Forbidden()
-            .json(ResponseFormatter::error("Access denied", 403, None));
+        return HttpResponse::Forbidden().json(ResponseFormatter::forbidden("Access denied"));
     }
 
     let role = body.role.as_deref().unwrap_or(Role::ClientViewer.as_str());
@@ -69,12 +68,10 @@ pub async fn register(
         .register(&body.username, &body.email, &body.password, role)
         .await
     {
-        Ok(user) => {
-            let user_value = serde_json::to_value(&user).unwrap_or_default();
-            HttpResponse::Created().json(
-                ResponseFormatter::success(user_value, "User registered successfully", 201),
-            )
-        }
+        Ok(user) => HttpResponse::Created().json(ResponseFormatter::created(
+            user,
+            "User registered successfully",
+        )),
         Err(e) => e.to_response(),
     }
 }
@@ -85,16 +82,13 @@ pub async fn login(
     body: web::Json<LoginRequest>,
 ) -> HttpResponse {
     if let Err(e) = body.validate() {
-        return HttpResponse::BadRequest().json(
-            ResponseFormatter::validation_error(Some(serde_json::to_value(e.to_string()).unwrap())),
-        );
+        return HttpResponse::BadRequest().json(ResponseFormatter::validation_error(Some(
+            serde_json::to_value(e.to_string()).unwrap(),
+        )));
     }
 
     match state.auth_service.login(&body.email, &body.password).await {
         Ok((user, token)) => {
-            let user_value = serde_json::to_value(&user).unwrap_or_default();
-
-            // Set authToken cookie: httpOnly, secure in production, SameSite=Lax
             let cookie = Cookie::build("authToken", token)
                 .path("/")
                 .http_only(state.config.cookie.http_only)
@@ -107,7 +101,7 @@ pub async fn login(
 
             HttpResponse::Ok()
                 .cookie(cookie)
-                .json(ResponseFormatter::success(user_value, "Login successful", 200))
+                .json(ResponseFormatter::ok(user, "Login successful"))
         }
         Err(e) => e.to_response(),
     }
@@ -118,20 +112,17 @@ pub async fn get_profile(state: web::Data<AppState>, req: HttpRequest) -> HttpRe
     let user = match req.extensions().get::<AuthenticatedUser>() {
         Some(u) => u.clone(),
         None => {
-            return HttpResponse::Unauthorized()
-                .json(ResponseFormatter::error("Authentication required", 401, None));
+            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
+                "Authentication required",
+            ));
         }
     };
 
     match state.auth_service.get_profile(&user.user_id).await {
-        Ok(profile) => {
-            let value = serde_json::to_value(&profile).unwrap_or_default();
-            HttpResponse::Ok().json(ResponseFormatter::success(
-                value,
-                "Profile retrieved successfully",
-                200,
-            ))
-        }
+        Ok(profile) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            profile,
+            "Profile retrieved successfully",
+        )),
         Err(e) => e.to_response(),
     }
 }
@@ -145,8 +136,9 @@ pub async fn update_profile(
     let user = match req.extensions().get::<AuthenticatedUser>() {
         Some(u) => u.clone(),
         None => {
-            return HttpResponse::Unauthorized()
-                .json(ResponseFormatter::error("Authentication required", 401, None));
+            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
+                "Authentication required",
+            ));
         }
     };
 
@@ -160,14 +152,10 @@ pub async fn update_profile(
         .update_profile(&user.user_id, updates)
         .await
     {
-        Ok(profile) => {
-            let value = serde_json::to_value(&profile).unwrap_or_default();
-            HttpResponse::Ok().json(ResponseFormatter::success(
-                value,
-                "Profile updated successfully",
-                200,
-            ))
-        }
+        Ok(profile) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            profile,
+            "Profile updated successfully",
+        )),
         Err(e) => e.to_response(),
     }
 }
@@ -180,14 +168,10 @@ pub async fn deactivate_user(
     let user_id = path.into_inner();
 
     match state.auth_service.deactivate_user(&user_id).await {
-        Ok(user) => {
-            let value = serde_json::to_value(&user).unwrap_or_default();
-            HttpResponse::Ok().json(ResponseFormatter::success(
-                value,
-                "User deactivated successfully",
-                200,
-            ))
-        }
+        Ok(user) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            user,
+            "User deactivated successfully",
+        )),
         Err(e) => e.to_response(),
     }
 }
@@ -201,9 +185,10 @@ pub async fn logout() -> HttpResponse {
         .same_site(SameSite::Lax)
         .finish();
 
-    HttpResponse::Ok().cookie(cookie).json(ResponseFormatter::success(
-        serde_json::json!({}),
-        "Logout successful",
-        200,
-    ))
+    HttpResponse::Ok()
+        .cookie(cookie)
+        .json(ResponseFormatter::ok(
+            serde_json::json!({}),
+            "Logout successful",
+        ))
 }

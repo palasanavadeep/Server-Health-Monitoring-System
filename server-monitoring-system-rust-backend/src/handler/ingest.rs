@@ -1,8 +1,8 @@
 use actix_web::{web, HttpRequest, HttpResponse};
-use serde_json::json;
 
 use crate::app_state::AppState;
-use crate::domain::ingest::{IngestHitRequest, IngestStatus};
+use crate::dto::request::ingest::IngestHitRequest;
+use crate::dto::response::ingest::IngestStatus;
 use crate::middleware::validate_api_key;
 use crate::util::response::ResponseFormatter;
 
@@ -39,9 +39,9 @@ pub async fn ingest_hit(
     hit.client_id = validated
         .client
         .id
-        .map(|id| id.to_hex())
+        .clone()
         .unwrap_or_default();
-    hit.api_key_id = validated.api_key.id.map(|id| id.to_hex());
+    hit.api_key_id = validated.api_key.id.clone();
     hit.ip = Some(ip);
     hit.user_agent = Some(user_agent);
 
@@ -58,7 +58,7 @@ pub async fn ingest_hit(
                 HttpResponse::ServiceUnavailable().json(ResponseFormatter::error(
                     "Service temporarily unavailable",
                     503,
-                    Some(json!({
+                    Some(serde_json::json!({
                         "eventId": result.event_id,
                         "reason": result.reason,
                         "retryAfter": "30 seconds"
@@ -66,7 +66,7 @@ pub async fn ingest_hit(
                 ))
             } else {
                 HttpResponse::Accepted().json(ResponseFormatter::success(
-                    json!(result),
+                    result,
                     "API hit queued for processing",
                     202,
                 ))

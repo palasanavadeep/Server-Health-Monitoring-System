@@ -2,7 +2,7 @@ use actix_web::{web, App, HttpResponse, HttpServer};
 use std::sync::Arc;
 
 use server_monitoring::app_state::AppState;
-use server_monitoring::config::database::{create_pg_pool, MongoConnection};
+use server_monitoring::config::database::{create_sea_orm_db, MongoConnection};
 use server_monitoring::config::messaging::RabbitMqConnection;
 use server_monitoring::config::settings::AppConfig;
 use server_monitoring::config::telemetry;
@@ -10,7 +10,7 @@ use server_monitoring::messaging::producer::EventProducer;
 use server_monitoring::middleware::request_logger::RequestLogger;
 use server_monitoring::repository::api_key_repo::MongoApiKeyRepository;
 use server_monitoring::repository::client_repo::MongoClientRepository;
-use server_monitoring::repository::metrics_repo::PgMetricsRepository;
+use server_monitoring::repository::metrics_repo::SeaOrmMetricsRepository;
 use server_monitoring::repository::user_repo::MongoUserRepository;
 use server_monitoring::resilience::circuit_breaker::CircuitBreaker;
 use server_monitoring::resilience::retry::RetryStrategy;
@@ -47,7 +47,8 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("Failed to connect to MongoDB");
 
-    let pg_pool = create_pg_pool(&config.postgres_connection_string())
+    // SeaORM connection pool for PostgreSQL
+    let sea_db = create_sea_orm_db(&config.postgres_connection_string())
         .await
         .unwrap_or_else(|e| {
             panic!(
@@ -78,7 +79,7 @@ async fn main() -> std::io::Result<()> {
         Arc::new(MongoApiKeyRepository::new(&db));
 
     let metrics_repo: Arc<dyn server_monitoring::repository::metrics_repo::MetricsRepository> =
-        Arc::new(PgMetricsRepository::new(pg_pool.clone()));
+        Arc::new(SeaOrmMetricsRepository::new(sea_db.clone()));
 
     // ── Service layer ───────────────────────────────────────────────────────
 
@@ -88,7 +89,7 @@ async fn main() -> std::io::Result<()> {
 
     let analytics_service = AnalyticsService::new(metrics_repo);
 
-    // Event producer with circuit breaker + retry — all parameters sourced from config
+    // Event producer with circuit breaker + retry — all parameters from config
     let circuit_breaker = Arc::new(CircuitBreaker::new(
         config.resilience.cb_failure_threshold,
         config.resilience.cb_cooldown_ms,
@@ -116,6 +117,7 @@ async fn main() -> std::io::Result<()> {
         client_service,
         analytics_service,
         ingest_service,
+        sea_db,
         config.clone(),
     ));
 
@@ -140,10 +142,8 @@ async fn main() -> std::io::Result<()> {
             .configure(|cfg| routes::configure(cfg, &config_clone))
             // 404 fallback
             .default_service(web::route().to(|| async {
-                HttpResponse::NotFound().json(ResponseFormatter::error(
+                HttpResponse::NotFound().json(ResponseFormatter::not_found(
                     "Endpoint not found",
-                    404,
-                    None,
                 ))
             }))
     })

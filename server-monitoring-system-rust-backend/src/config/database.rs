@@ -1,8 +1,10 @@
 use ::mongodb::{options::ClientOptions, Client, Database};
-use sqlx::postgres::{PgPool, PgPoolOptions};
+use sea_orm::{ConnectOptions, Database as SeaDatabase, DatabaseConnection, DbErr};
 use std::time::Duration;
 
 use super::settings::MongoConfig;
+
+// ── MongoDB ───────────────────────────────────────────────────────────────────
 
 /// MongoDB connection manager.
 pub struct MongoConnection {
@@ -63,29 +65,30 @@ impl MongoConnection {
     }
 }
 
-/// Create a PostgreSQL connection pool.
-pub async fn create_pg_pool(connection_string: &str) -> Result<PgPool, sqlx::Error> {
-    let pool = PgPoolOptions::new()
-        .max_connections(20)
+// ── PostgreSQL (SeaORM) ───────────────────────────────────────────────────────
+
+/// Create a SeaORM `DatabaseConnection` for PostgreSQL.
+///
+/// SeaORM wraps sqlx under the hood; this replaces the raw `PgPool` approach.
+/// The returned `DatabaseConnection` is cheap to clone and intended to be stored
+/// in `AppState` alongside the MongoDB handle.
+pub async fn create_sea_orm_db(connection_url: &str) -> Result<DatabaseConnection, DbErr> {
+    let mut opts = ConnectOptions::new(connection_url.to_owned());
+
+    opts.max_connections(20)
+        .min_connections(2)
+        .connect_timeout(Duration::from_secs(5))
         .idle_timeout(Duration::from_secs(30))
-        .acquire_timeout(Duration::from_secs(2))
-        .after_connect(|_conn, _meta| {
-            Box::pin(async move {
-                tracing::debug!("New PG connection established");
-                Ok(())
-            })
-        })
-        .connect(connection_string)
-        .await?;
+        .sqlx_logging(false); // use tracing instead
 
-    tracing::info!("PG Pool Created");
+    tracing::info!("Connecting to PostgreSQL via SeaORM...");
 
-    // Test connection
-    let row: (chrono::DateTime<chrono::Utc>,) = sqlx::query_as("SELECT NOW()")
-        .fetch_one(&pool)
-        .await?;
+    let db = SeaDatabase::connect(opts).await?;
 
-    tracing::info!("PG connected successfully at {}", row.0);
+    // Sanity-check the connection
+    db.ping().await?;
 
-    Ok(pool)
+    tracing::info!("PostgreSQL connected (SeaORM): {}", connection_url);
+
+    Ok(db)
 }

@@ -1,20 +1,19 @@
-use bson::oid::ObjectId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::user::default_true;
 
-/// API key entity stored in MongoDB `apikeys` collection.
+/// API key entity (pure domain model, no DB-specific types).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiKey {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 
     pub key_id: String,
     pub key_value: String,
 
-    pub client_id: ObjectId,
+    pub client_id: String,
 
     pub name: String,
 
@@ -34,7 +33,7 @@ pub struct ApiKey {
     pub is_active: bool,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_by: Option<ObjectId>,
+    pub created_by: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<DateTime<Utc>>,

@@ -1,17 +1,25 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sqlx::postgres::PgPool;
-
-use crate::domain::metrics::{
-    ApiMetricsEntry, EndpointStat, OverallStats, TimeSeriesEntry,
+use sea_orm::{
+    ConnectionTrait, DatabaseConnection, DbBackend, FromQueryResult, Statement,
 };
+use serde::Deserialize;
+
+use crate::domain::metrics::{ApiMetricsEntry, EndpointStat, OverallStats, TimeSeriesEntry};
 use crate::error::app_error::AppError;
 
+/// Maximum rows returnable in a single query (safety cap).
 const MAX_LIMIT: i64 = 1000;
 
-/// Metrics repository trait — all methods return strongly-typed structs.
+// ── Trait ─────────────────────────────────────────────────────────────────────
+
+/// Metrics repository — all methods return strongly-typed domain structs.
+///
+/// The implementation detail (SeaORM / raw SQL) is hidden behind this trait.
+/// Services import the trait only; the concrete type is wired at startup.
 #[async_trait]
 pub trait MetricsRepository: Send + Sync {
+    /// Upsert one time-bucket row — called by the consumer on every processed event.
     async fn upsert_endpoint_metrics(
         &self,
         client_id: &str,
@@ -56,21 +64,24 @@ pub trait MetricsRepository: Send + Sync {
     ) -> Result<(Vec<ApiMetricsEntry>, i64), AppError>;
 }
 
-/// PostgreSQL implementation of `MetricsRepository`.
-pub struct PgMetricsRepository {
-    pool: PgPool,
+// ── SeaORM implementation ─────────────────────────────────────────────────────
+
+/// PostgreSQL implementation using SeaORM for connection management and
+/// raw-SQL queries for aggregate analytics (SeaORM `Statement`).
+pub struct SeaOrmMetricsRepository {
+    db: DatabaseConnection,
 }
 
-impl PgMetricsRepository {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+impl SeaOrmMetricsRepository {
+    pub fn new(db: DatabaseConnection) -> Self {
+        Self { db }
     }
 }
 
-// ── Private SQLx row types ────────────────────────────────────────────────────
-// These are internal to the impl and never cross the repository boundary.
+// ── Internal query-result types ───────────────────────────────────────────────
+// These are never exposed above the repository boundary.
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, FromQueryResult, Deserialize)]
 struct StatsRow {
     total_hits: i64,
     error_hits: i64,
@@ -79,7 +90,7 @@ struct StatsRow {
     unique_endpoints: i64,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, FromQueryResult, Deserialize)]
 struct EndpointRow {
     service_name: String,
     endpoint: String,
@@ -89,7 +100,7 @@ struct EndpointRow {
     error_hits: i64,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, FromQueryResult, Deserialize)]
 struct TimeSeriesRow {
     service_name: String,
     endpoint: String,
@@ -99,10 +110,10 @@ struct TimeSeriesRow {
     avg_latency: f64,
     min_latency: f64,
     max_latency: f64,
-    time_bucket: chrono::NaiveDateTime,
+    time_bucket: DateTime<Utc>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, FromQueryResult, Deserialize)]
 struct ApiMetricsRow {
     service_name: String,
     endpoint: String,
@@ -114,10 +125,15 @@ struct ApiMetricsRow {
     max_latency: f64,
 }
 
-// ── MetricsRepository impl ────────────────────────────────────────────────────
+#[derive(Debug, FromQueryResult, Deserialize)]
+struct CountRow {
+    count: i64,
+}
+
+// ── impl MetricsRepository ────────────────────────────────────────────────────
 
 #[async_trait]
-impl MetricsRepository for PgMetricsRepository {
+impl MetricsRepository for SeaOrmMetricsRepository {
     async fn upsert_endpoint_metrics(
         &self,
         client_id: &str,
@@ -131,37 +147,44 @@ impl MetricsRepository for PgMetricsRepository {
         max_latency: f64,
         time_bucket: DateTime<Utc>,
     ) -> Result<(), AppError> {
-        sqlx::query(
-            r#"
+        let sql = r#"
             INSERT INTO endpoint_metrics (
-                client_id, service_name, endpoint, method, total_hits, error_hits,
-                avg_latency, min_latency, max_latency, time_bucket
+                client_id, service_name, endpoint, method,
+                total_hits, error_hits, avg_latency, min_latency, max_latency, time_bucket
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (client_id, service_name, endpoint, method, time_bucket)
             DO UPDATE SET
-               total_hits = endpoint_metrics.total_hits + EXCLUDED.total_hits,
-               error_hits = endpoint_metrics.error_hits + EXCLUDED.error_hits,
-               avg_latency = (
-                (endpoint_metrics.avg_latency * endpoint_metrics.total_hits) + (EXCLUDED.avg_latency * EXCLUDED.total_hits)
-               ) / (endpoint_metrics.total_hits + EXCLUDED.total_hits),
+                total_hits  = endpoint_metrics.total_hits  + EXCLUDED.total_hits,
+                error_hits  = endpoint_metrics.error_hits  + EXCLUDED.error_hits,
+                avg_latency = (
+                    (endpoint_metrics.avg_latency * endpoint_metrics.total_hits)
+                    + (EXCLUDED.avg_latency * EXCLUDED.total_hits)
+                ) / NULLIF(endpoint_metrics.total_hits + EXCLUDED.total_hits, 0),
                 min_latency = LEAST(endpoint_metrics.min_latency, EXCLUDED.min_latency),
                 max_latency = GREATEST(endpoint_metrics.max_latency, EXCLUDED.max_latency),
-                updated_at = CURRENT_TIMESTAMP
-            "#,
-        )
-        .bind(client_id)
-        .bind(service_name)
-        .bind(endpoint)
-        .bind(method)
-        .bind(total_hits)
-        .bind(error_hits)
-        .bind(avg_latency)
-        .bind(min_latency)
-        .bind(max_latency)
-        .bind(time_bucket.naive_utc())
-        .execute(&self.pool)
-        .await?;
+                updated_at  = NOW()
+        "#;
+
+        self.db
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                [
+                    client_id.into(),
+                    service_name.into(),
+                    endpoint.into(),
+                    method.into(),
+                    total_hits.into(),
+                    error_hits.into(),
+                    avg_latency.into(),
+                    min_latency.into(),
+                    max_latency.into(),
+                    time_bucket.into(),
+                ],
+            ))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(())
     }
@@ -172,44 +195,49 @@ impl MetricsRepository for PgMetricsRepository {
         start_time: DateTime<Utc>,
         end_time: DateTime<Utc>,
     ) -> Result<OverallStats, AppError> {
-        let row = if let Some(cid) = client_id {
-            sqlx::query_as::<_, StatsRow>(
+        let (sql, values) = if let Some(cid) = client_id {
+            (
                 r#"
                 SELECT
-                    COALESCE(SUM(total_hits), 0) as total_hits,
-                    COALESCE(SUM(error_hits), 0) as error_hits,
-                    COALESCE(SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0), 0) as avg_latency,
-                    COUNT(DISTINCT service_name) as unique_services,
-                    COUNT(DISTINCT endpoint) as unique_endpoints
+                    COALESCE(SUM(total_hits), 0)                                                        AS total_hits,
+                    COALESCE(SUM(error_hits), 0)                                                        AS error_hits,
+                    COALESCE(SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0), 0)             AS avg_latency,
+                    COUNT(DISTINCT service_name)                                                        AS unique_services,
+                    COUNT(DISTINCT endpoint)                                                            AS unique_endpoints
                 FROM endpoint_metrics
-                WHERE client_id = $1 AND time_bucket >= $2 AND time_bucket <= $3
+                WHERE client_id = $1
+                  AND time_bucket >= $2
+                  AND time_bucket <= $3
                 "#,
+                vec![cid.into(), start_time.into(), end_time.into()],
             )
-            .bind(cid)
-            .bind(start_time.naive_utc())
-            .bind(end_time.naive_utc())
-            .fetch_one(&self.pool)
-            .await?
         } else {
-            sqlx::query_as::<_, StatsRow>(
+            (
                 r#"
                 SELECT
-                    COALESCE(SUM(total_hits), 0) as total_hits,
-                    COALESCE(SUM(error_hits), 0) as error_hits,
-                    COALESCE(SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0), 0) as avg_latency,
-                    COUNT(DISTINCT service_name) as unique_services,
-                    COUNT(DISTINCT endpoint) as unique_endpoints
+                    COALESCE(SUM(total_hits), 0)                                                        AS total_hits,
+                    COALESCE(SUM(error_hits), 0)                                                        AS error_hits,
+                    COALESCE(SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0), 0)             AS avg_latency,
+                    COUNT(DISTINCT service_name)                                                        AS unique_services,
+                    COUNT(DISTINCT endpoint)                                                            AS unique_endpoints
                 FROM endpoint_metrics
-                WHERE time_bucket >= $1 AND time_bucket <= $2
+                WHERE time_bucket >= $1
+                  AND time_bucket <= $2
                 "#,
+                vec![start_time.into(), end_time.into()],
             )
-            .bind(start_time.naive_utc())
-            .bind(end_time.naive_utc())
-            .fetch_one(&self.pool)
-            .await?
         };
 
-        // Map SQLx row → domain struct (no allocation overhead from JSON)
+        let row = StatsRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .one(&self.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .ok_or_else(|| AppError::Database("No stats row returned".to_string()))?;
+
         Ok(OverallStats {
             total_hits: row.total_hits,
             error_hits: row.error_hits,
@@ -227,64 +255,59 @@ impl MetricsRepository for PgMetricsRepository {
     ) -> Result<Vec<EndpointStat>, AppError> {
         let safe_limit = limit.clamp(1, MAX_LIMIT);
 
-        let rows: Vec<EndpointRow> = if let Some(cid) = client_id {
-            if let Some(st) = start_time {
-                sqlx::query_as::<_, EndpointRow>(
-                    r#"
-                    SELECT service_name, endpoint, method,
-                        SUM(total_hits) as total_hits,
-                        SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0) as avg_latency,
-                        SUM(error_hits) as error_hits
-                    FROM endpoint_metrics
-                    WHERE client_id = $1 AND time_bucket >= $2
-                    GROUP BY service_name, endpoint, method
-                    ORDER BY total_hits DESC
-                    LIMIT $3
-                    "#,
-                )
-                .bind(cid)
-                .bind(st.naive_utc())
-                .bind(safe_limit)
-                .fetch_all(&self.pool)
-                .await?
-            } else {
-                sqlx::query_as::<_, EndpointRow>(
-                    r#"
-                    SELECT service_name, endpoint, method,
-                        SUM(total_hits) as total_hits,
-                        SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0) as avg_latency,
-                        SUM(error_hits) as error_hits
-                    FROM endpoint_metrics
-                    WHERE client_id = $1
-                    GROUP BY service_name, endpoint, method
-                    ORDER BY total_hits DESC
-                    LIMIT $2
-                    "#,
-                )
-                .bind(cid)
-                .bind(safe_limit)
-                .fetch_all(&self.pool)
-                .await?
-            }
-        } else {
-            sqlx::query_as::<_, EndpointRow>(
+        let (sql, values) = match (client_id, start_time) {
+            (Some(cid), Some(st)) => (
                 r#"
                 SELECT service_name, endpoint, method,
-                    SUM(total_hits) as total_hits,
-                    SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0) as avg_latency,
-                    SUM(error_hits) as error_hits
+                    SUM(total_hits)                                                 AS total_hits,
+                    SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0)     AS avg_latency,
+                    SUM(error_hits)                                                 AS error_hits
+                FROM endpoint_metrics
+                WHERE client_id = $1 AND time_bucket >= $2
+                GROUP BY service_name, endpoint, method
+                ORDER BY total_hits DESC
+                LIMIT $3
+                "#,
+                vec![cid.into(), st.into(), safe_limit.into()],
+            ),
+            (Some(cid), None) => (
+                r#"
+                SELECT service_name, endpoint, method,
+                    SUM(total_hits)                                                 AS total_hits,
+                    SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0)     AS avg_latency,
+                    SUM(error_hits)                                                 AS error_hits
+                FROM endpoint_metrics
+                WHERE client_id = $1
+                GROUP BY service_name, endpoint, method
+                ORDER BY total_hits DESC
+                LIMIT $2
+                "#,
+                vec![cid.into(), safe_limit.into()],
+            ),
+            _ => (
+                r#"
+                SELECT service_name, endpoint, method,
+                    SUM(total_hits)                                                 AS total_hits,
+                    SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0)     AS avg_latency,
+                    SUM(error_hits)                                                 AS error_hits
                 FROM endpoint_metrics
                 GROUP BY service_name, endpoint, method
                 ORDER BY total_hits DESC
                 LIMIT $1
                 "#,
-            )
-            .bind(safe_limit)
-            .fetch_all(&self.pool)
-            .await?
+                vec![safe_limit.into()],
+            ),
         };
 
-        // Map directly — no intermediate JSON Value
+        let rows = EndpointRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .all(&self.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
         Ok(rows
             .into_iter()
             .map(|r| EndpointStat {
@@ -307,52 +330,55 @@ impl MetricsRepository for PgMetricsRepository {
     ) -> Result<Vec<TimeSeriesEntry>, AppError> {
         let safe_limit = limit.clamp(1, MAX_LIMIT);
 
-        let rows: Vec<TimeSeriesRow> = if let Some(cid) = client_id {
-            sqlx::query_as::<_, TimeSeriesRow>(
+        let (sql, values) = if let Some(cid) = client_id {
+            (
                 r#"
                 SELECT service_name, endpoint, method,
-                    SUM(total_hits) as total_hits,
-                    SUM(error_hits) as error_hits,
-                    SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0) as avg_latency,
-                    MIN(min_latency) as min_latency,
-                    MAX(max_latency) as max_latency,
+                    SUM(total_hits)                                                 AS total_hits,
+                    SUM(error_hits)                                                 AS error_hits,
+                    SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0)     AS avg_latency,
+                    MIN(min_latency)                                                AS min_latency,
+                    MAX(max_latency)                                                AS max_latency,
                     time_bucket
                 FROM endpoint_metrics
-                WHERE client_id = $1 AND time_bucket >= $2 AND time_bucket <= $3
+                WHERE client_id = $1
+                  AND time_bucket >= $2
+                  AND time_bucket <= $3
                 GROUP BY service_name, endpoint, method, time_bucket
                 ORDER BY time_bucket DESC
                 LIMIT $4
                 "#,
+                vec![cid.into(), start_time.into(), end_time.into(), safe_limit.into()],
             )
-            .bind(cid)
-            .bind(start_time.naive_utc())
-            .bind(end_time.naive_utc())
-            .bind(safe_limit)
-            .fetch_all(&self.pool)
-            .await?
         } else {
-            sqlx::query_as::<_, TimeSeriesRow>(
+            (
                 r#"
                 SELECT service_name, endpoint, method,
-                    SUM(total_hits) as total_hits,
-                    SUM(error_hits) as error_hits,
-                    SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0) as avg_latency,
-                    MIN(min_latency) as min_latency,
-                    MAX(max_latency) as max_latency,
+                    SUM(total_hits)                                                 AS total_hits,
+                    SUM(error_hits)                                                 AS error_hits,
+                    SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0)     AS avg_latency,
+                    MIN(min_latency)                                                AS min_latency,
+                    MAX(max_latency)                                                AS max_latency,
                     time_bucket
                 FROM endpoint_metrics
-                WHERE time_bucket >= $1 AND time_bucket <= $2
+                WHERE time_bucket >= $1
+                  AND time_bucket <= $2
                 GROUP BY service_name, endpoint, method, time_bucket
                 ORDER BY time_bucket DESC
                 LIMIT $3
                 "#,
+                vec![start_time.into(), end_time.into(), safe_limit.into()],
             )
-            .bind(start_time.naive_utc())
-            .bind(end_time.naive_utc())
-            .bind(safe_limit)
-            .fetch_all(&self.pool)
-            .await?
         };
+
+        let rows = TimeSeriesRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .all(&self.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(rows
             .into_iter()
@@ -365,7 +391,7 @@ impl MetricsRepository for PgMetricsRepository {
                 avg_latency: r.avg_latency,
                 min_latency: r.min_latency,
                 max_latency: r.max_latency,
-                time_bucket: r.time_bucket.and_utc(),
+                time_bucket: r.time_bucket,
             })
             .collect())
     }
@@ -376,45 +402,55 @@ impl MetricsRepository for PgMetricsRepository {
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<ApiMetricsEntry>, i64), AppError> {
-        let count_row: (i64,) = sqlx::query_as(
-            r#"
-            SELECT COUNT(*) FROM (
+        // Count distinct (service, endpoint, method) tuples
+        let count_sql = r#"
+            SELECT COUNT(*) AS count
+            FROM (
                 SELECT service_name, endpoint, method
                 FROM endpoint_metrics
                 WHERE client_id = $1
                 GROUP BY service_name, endpoint, method
-            ) AS temp
-            "#,
-        )
-        .bind(client_id)
-        .fetch_one(&self.pool)
-        .await?;
+            ) AS subquery
+        "#;
 
-        let total_count = count_row.0;
+        let count_row = CountRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            count_sql,
+            [client_id.into()],
+        ))
+        .one(&self.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .ok_or_else(|| AppError::Database("Count query returned no row".to_string()))?;
 
-        let rows: Vec<ApiMetricsRow> = sqlx::query_as::<_, ApiMetricsRow>(
-            r#"
+        let total_count = count_row.count;
+
+        // Paginated metrics rows
+        let data_sql = r#"
             SELECT service_name, endpoint, method,
-                SUM(total_hits) as total_hits,
-                SUM(error_hits) as error_hits,
-                SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0) as avg_latency,
-                MIN(min_latency) as min_latency,
-                MAX(max_latency) as max_latency
+                SUM(total_hits)                                                 AS total_hits,
+                SUM(error_hits)                                                 AS error_hits,
+                SUM(avg_latency * total_hits) / NULLIF(SUM(total_hits), 0)     AS avg_latency,
+                MIN(min_latency)                                                AS min_latency,
+                MAX(max_latency)                                                AS max_latency
             FROM endpoint_metrics
             WHERE client_id = $1
             GROUP BY service_name, endpoint, method
             ORDER BY total_hits DESC, service_name, endpoint
             LIMIT $2
             OFFSET $3
-            "#,
-        )
-        .bind(client_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
+        "#;
 
-        let items: Vec<ApiMetricsEntry> = rows
+        let rows = ApiMetricsRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            data_sql,
+            [client_id.into(), limit.into(), offset.into()],
+        ))
+        .all(&self.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let items = rows
             .into_iter()
             .map(|r| ApiMetricsEntry {
                 service_name: r.service_name,

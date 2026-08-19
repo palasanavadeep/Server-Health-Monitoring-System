@@ -1,23 +1,22 @@
 //! Server Monitoring System — library crate.
 //!
-//! This crate is organised as a modular monolith so that any module can be
-//! decoupled into a microservice with minimal friction.
+//! Organised as a clean modular monolith. Each layer has a single responsibility:
 //!
-//! # Module tree
-//! ```
+//! ```text
 //! server_monitoring
-//! ├── app_state       — DI container (AppState)
-//! ├── config/         — Settings, DB connections, telemetry
-//! ├── domain/         — Pure business entities (User, Client, ApiKey, …)
-//! ├── error/          — Centralised error type (AppError via thiserror)
-//! ├── repository/     — Data access layer (trait + Mongo/PG implementations)
-//! ├── service/        — Business logic (AuthService, ClientService, …)
-//! ├── handler/        — HTTP request handlers (no business logic)
-//! ├── router/         — Route registration
-//! ├── middleware/     — actix-web middleware (JWT, rate-limit, …)
-//! ├── messaging/      — RabbitMQ producer + consumer
-//! ├── resilience/     — Circuit breaker + retry strategy
-//! └── util/           — Shared utilities (response, security, IP, validation)
+//! ├── config/      — Settings, DB connections, telemetry
+//! ├── domain/      — Pure business entities (User, Client, ApiKey…)
+//! ├── dto/         — HTTP I/O: request bodies + typed response shapes
+//! ├── entity/      — SeaORM table models (PostgreSQL, never cross service boundary)
+//! ├── error/       — Centralised AppError (thiserror)
+//! ├── repository/  — Data access traits + Mongo / SeaORM implementations
+//! ├── service/     — Business logic
+//! ├── handler/     — Thin HTTP handlers (no business logic)
+//! ├── router/      — Route registration
+//! ├── middleware/  — actix-web middleware (JWT, rate-limit…)
+//! ├── messaging/   — RabbitMQ producer + consumer
+//! ├── resilience/  — Circuit breaker + retry strategy
+//! └── util/        — Shared utilities (response formatter, security, IP)
 //! ```
 
 pub mod app_state;
@@ -25,8 +24,14 @@ pub mod app_state;
 // Infrastructure
 pub mod config;
 
-// Core domain
+// Core domain — business entities only
 pub mod domain;
+
+// I/O contracts — HTTP request bodies + response shapes
+pub mod dto;
+
+// DB table models — SeaORM entities (PostgreSQL)
+pub mod entity;
 
 // Error handling
 pub mod error;

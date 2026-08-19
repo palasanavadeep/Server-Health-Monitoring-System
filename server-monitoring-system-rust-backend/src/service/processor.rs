@@ -1,4 +1,3 @@
-use bson::oid::ObjectId;
 use chrono::{DateTime, Timelike, Utc};
 use std::sync::Arc;
 
@@ -37,9 +36,6 @@ impl ProcessorService {
     }
 
     /// Process a single event — save raw data to MongoDB and update PG metrics.
-    ///
-    /// Accepts a typed `HitEventData` struct deserialized by the consumer,
-    /// so there is no `serde_json::Value` field-extraction overhead here.
     pub async fn process_event(&self, data: HitEventData) -> Result<(), AppError> {
         tracing::info!(
             event_id = %data.event_id,
@@ -50,20 +46,11 @@ impl ProcessorService {
             "Processing event"
         );
 
-        // Build typed ApiHit entity
-        let client_oid = ObjectId::parse_str(&data.client_id)
-            .unwrap_or_else(|_| ObjectId::new());
-
-        let api_key_oid = data
-            .api_key_id
-            .as_deref()
-            .and_then(|s| ObjectId::parse_str(s).ok());
-
         let hit = ApiHit {
-            id: Some(ObjectId::new()),
+            id: None,
             event_id: data.event_id.clone(),
-            client_id: client_oid,
-            api_key_id: api_key_oid,
+            client_id: data.client_id.clone(),
+            api_key_id: data.api_key_id.clone(),
             service_name: data.service_name.clone(),
             endpoint: data.endpoint.clone(),
             method: data.method.clone(),

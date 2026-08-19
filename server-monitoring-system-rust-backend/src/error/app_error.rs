@@ -51,6 +51,10 @@ pub enum AppError {
         status_code: u16,
         errors: Value,
     },
+
+    /// 500 — database-layer error (wraps SeaORM / MongoDB errors before reaching the handler).
+    #[error("Database error: {0}")]
+    Database(String),
 }
 
 impl AppError {
@@ -110,6 +114,7 @@ impl AppError {
             Self::Forbidden { .. } => 403,
             Self::NotFound { .. } => 404,
             Self::Conflict { .. } => 409,
+            Self::Database(_) => 500,
             Self::Internal { .. } => 500,
             Self::WithErrors { status_code, .. } => *status_code,
         }
@@ -125,6 +130,7 @@ impl AppError {
             | Self::Conflict { message }
             | Self::Internal { message, .. }
             | Self::WithErrors { message, .. } => message,
+            Self::Database(msg) => msg,
         }
     }
 
@@ -171,10 +177,10 @@ impl From<mongodb::error::Error> for AppError {
     }
 }
 
-impl From<sqlx::Error> for AppError {
-    fn from(err: sqlx::Error) -> Self {
-        tracing::error!("PostgreSQL error: {}", err);
-        AppError::internal("Internal server error")
+impl From<sea_orm::DbErr> for AppError {
+    fn from(err: sea_orm::DbErr) -> Self {
+        tracing::error!("SeaORM/PostgreSQL error: {}", err);
+        AppError::Database(err.to_string())
     }
 }
 

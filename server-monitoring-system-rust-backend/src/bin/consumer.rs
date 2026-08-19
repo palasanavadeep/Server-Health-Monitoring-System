@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use server_monitoring::config::database::{create_pg_pool, MongoConnection};
+use server_monitoring::config::database::{create_sea_orm_db, MongoConnection};
 use server_monitoring::config::messaging::RabbitMqConnection;
 use server_monitoring::config::settings::AppConfig;
 use server_monitoring::config::telemetry;
 use server_monitoring::messaging::consumer::EventConsumer;
 use server_monitoring::repository::api_hit_repo::MongoApiHitRepository;
-use server_monitoring::repository::metrics_repo::PgMetricsRepository;
+use server_monitoring::repository::metrics_repo::SeaOrmMetricsRepository;
 use server_monitoring::resilience::circuit_breaker::CircuitBreaker;
 use server_monitoring::resilience::retry::RetryStrategy;
 use server_monitoring::service::processor::ProcessorService;
@@ -80,11 +80,10 @@ async fn main() {
 async fn start_consumer(
     config: &AppConfig,
 ) -> Result<EventConsumer, Box<dyn std::error::Error + Send + Sync>> {
-    // Connect to databases with retry — max retries from ConsumerConfig
     let max_retries = config.consumer.db_connect_max_retries;
     let mut retries = 0u32;
 
-    let (db, pg_pool) = loop {
+    let (db, sea_db) = loop {
         tracing::info!(attempt = retries + 1, "Connecting to databases");
 
         let mongo_result = async {
@@ -97,15 +96,17 @@ async fn start_consumer(
         };
 
         let pg_result = async {
-            create_pg_pool(&config.postgres_connection_string())
+            create_sea_orm_db(&config.postgres_connection_string())
                 .await
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                    format!("PostgreSQL (SeaORM): {}", e).into()
+                })
         };
 
         match tokio::try_join!(mongo_result, pg_result) {
-            Ok((db, pool)) => {
+            Ok((mongo_db, sea_db)) => {
                 tracing::info!("Database connections established");
-                break (db, pool);
+                break (mongo_db, sea_db);
             }
             Err(e) => {
                 retries += 1;
@@ -123,7 +124,6 @@ async fn start_consumer(
                     .into());
                 }
 
-                // Linearly growing backoff: base_delay_ms * retries
                 let delay_secs = (config.consumer.startup_base_delay_ms / 1_000) * retries as u64;
                 tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
             }
@@ -139,12 +139,12 @@ async fn start_consumer(
         Arc::new(MongoApiHitRepository::new(&db));
 
     let metrics_repo: Arc<dyn server_monitoring::repository::metrics_repo::MetricsRepository> =
-        Arc::new(PgMetricsRepository::new(pg_pool));
+        Arc::new(SeaOrmMetricsRepository::new(sea_db));
 
     // Service layer
     let processor_service = Arc::new(ProcessorService::new(api_hit_repo, metrics_repo));
 
-    // Resilience primitives — all parameters from config, no magic numbers
+    // Resilience primitives — all parameters from config
     let circuit_breaker = Arc::new(CircuitBreaker::new(
         config.resilience.cb_failure_threshold,
         config.resilience.cb_cooldown_ms,

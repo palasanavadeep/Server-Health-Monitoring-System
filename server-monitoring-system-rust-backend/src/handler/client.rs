@@ -1,8 +1,7 @@
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse};
-use serde_json::json;
 
 use crate::app_state::AppState;
-use crate::domain::client::{
+use crate::dto::request::client::{
     CreateApiKeyRequest, CreateClientRequest, CreateClientUserRequest, RotateApiKeyRequest,
     UpdateApiKeyRequest,
 };
@@ -20,10 +19,8 @@ macro_rules! require_user {
         match get_user($req) {
             Some(u) => u,
             None => {
-                return HttpResponse::Unauthorized().json(ResponseFormatter::error(
+                return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
                     "Authentication required",
-                    401,
-                    None,
                 ))
             }
         }
@@ -48,7 +45,7 @@ pub async fn create_client(
         Ok(true) => {}
         Ok(false) => {
             return HttpResponse::Forbidden()
-                .json(ResponseFormatter::error("Access denied", 403, None))
+                .json(ResponseFormatter::forbidden("Access denied"))
         }
         Err(e) => return e.to_response(),
     }
@@ -58,10 +55,9 @@ pub async fn create_client(
         .create_client(body.into_inner(), &user.user_id)
         .await
     {
-        Ok(client) => HttpResponse::Created().json(ResponseFormatter::success(
-            json!(client),
+        Ok(client) => HttpResponse::Created().json(ResponseFormatter::created(
+            client,
             "Client created successfully",
-            201,
         )),
         Err(e) => e.to_response(),
     }
@@ -82,10 +78,9 @@ pub async fn create_client_user(
         .create_client_user(&client_id, body.into_inner(), &user.role, user.client_id.as_deref())
         .await
     {
-        Ok(user_resp) => HttpResponse::Created().json(ResponseFormatter::success(
-            json!(user_resp),
+        Ok(user_resp) => HttpResponse::Created().json(ResponseFormatter::created(
+            user_resp,
             "Client user created successfully",
-            201,
         )),
         Err(e) => e.to_response(),
     }
@@ -112,10 +107,9 @@ pub async fn create_api_key(
         )
         .await
     {
-        Ok(api_key) => HttpResponse::Created().json(ResponseFormatter::success(
-            json!(api_key),
+        Ok(api_key) => HttpResponse::Created().json(ResponseFormatter::created(
+            api_key,
             "API key created successfully",
-            201,
         )),
         Err(e) => e.to_response(),
     }
@@ -135,10 +129,9 @@ pub async fn get_client_api_keys(
         .get_client_api_keys(&client_id, &user.role, user.client_id.as_deref())
         .await
     {
-        Ok(keys) => HttpResponse::Ok().json(ResponseFormatter::success(
-            json!(keys),
+        Ok(keys) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            keys,
             "API key fetched successfully",
-            200,
         )),
         Err(e) => e.to_response(),
     }
@@ -171,13 +164,12 @@ pub async fn update_api_key(
         )
         .await
     {
-        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::success(
-            json!(updated),
+        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            updated,
             "API key updated successfully",
-            200,
         )),
         Ok(None) => HttpResponse::NotFound()
-            .json(ResponseFormatter::error("API key not found", 404, None)),
+            .json(ResponseFormatter::not_found("API key not found")),
         Err(e) => e.to_response(),
     }
 }
@@ -201,10 +193,9 @@ pub async fn delete_api_key(
         )
         .await
     {
-        Ok(_) => HttpResponse::Ok().json(ResponseFormatter::success(
-            json!({}),
+        Ok(_) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            serde_json::json!({}),
             "API key deleted successfully",
-            200,
         )),
         Err(e) => e.to_response(),
     }
@@ -230,13 +221,12 @@ pub async fn deactivate_api_key(
         )
         .await
     {
-        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::success(
-            json!(updated),
+        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            updated,
             "API key deactivated successfully",
-            200,
         )),
         Ok(None) => HttpResponse::NotFound()
-            .json(ResponseFormatter::error("API key not found", 404, None)),
+            .json(ResponseFormatter::not_found("API key not found")),
         Err(e) => e.to_response(),
     }
 }
@@ -261,13 +251,12 @@ pub async fn activate_api_key(
         )
         .await
     {
-        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::success(
-            json!(updated),
+        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            updated,
             "API key activated successfully",
-            200,
         )),
         Ok(None) => HttpResponse::NotFound()
-            .json(ResponseFormatter::error("API key not found", 404, None)),
+            .json(ResponseFormatter::not_found("API key not found")),
         Err(e) => e.to_response(),
     }
 }
@@ -293,13 +282,12 @@ pub async fn rotate_api_key(
         )
         .await
     {
-        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::success(
-            json!(updated),
+        Ok(Some(updated)) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            updated,
             "API key rotated successfully",
-            200,
         )),
         Ok(None) => HttpResponse::NotFound()
-            .json(ResponseFormatter::error("API key not found", 404, None)),
+            .json(ResponseFormatter::not_found("API key not found")),
         Err(e) => e.to_response(),
     }
 }
@@ -323,10 +311,9 @@ pub async fn get_api_key(
         )
         .await
     {
-        Ok(api_key) => HttpResponse::Ok().json(ResponseFormatter::success(
-            json!(api_key),
+        Ok(api_key) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            api_key,
             "API key details retrieved successfully",
-            200,
         )),
         Err(e) => e.to_response(),
     }

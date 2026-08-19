@@ -1,24 +1,22 @@
-use bson::{doc, oid::ObjectId};
 use chrono::Utc;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::domain::api_key::{ApiKey, ApiKeyPermissions, ApiKeySecurity};
-use crate::domain::client::{
-    Client, CreateApiKeyRequest, CreateClientRequest, CreateClientUserRequest,
+use crate::domain::client::Client;
+use crate::domain::role::{self, Role};
+use crate::domain::user::{User, UserPermissions};
+use crate::dto::request::client::{
+    CreateApiKeyRequest, CreateClientRequest, CreateClientUserRequest,
     RotateApiKeyRequest, UpdateApiKeyRequest,
 };
-use crate::domain::role::{self, Role};
-use crate::domain::user::{User, UserPermissions, UserResponse};
+use crate::dto::response::auth::UserResponse;
 use crate::error::app_error::AppError;
 use crate::repository::api_key_repo::ApiKeyRepository;
 use crate::repository::client_repo::ClientRepository;
 use crate::repository::user_repo::UserRepository;
 
-/// Client management service — all methods accept typed request DTOs.
-///
-/// No `serde_json::Value` crosses any service boundary; field validation
-/// is guaranteed at compile time by the DTO types.
+/// Client management service — pure business logic working with domain entities and DTOs.
 pub struct ClientService {
     client_repository: Arc<dyn ClientRepository>,
     api_key_repository: Arc<dyn ApiKeyRepository>,
@@ -94,7 +92,7 @@ impl ClientService {
             .await?
             .ok_or_else(|| AppError::not_found("API key not found"))?;
 
-        if api_key.client_id.to_hex() != client_id {
+        if api_key.client_id != client_id {
             return Err(AppError::bad_request(
                 "API key does not belong to this client",
             ));
@@ -120,9 +118,6 @@ impl ClientService {
             )));
         }
 
-        let admin_oid = ObjectId::parse_str(admin_user_id)
-            .map_err(|_| AppError::bad_request("Invalid admin user ID"))?;
-
         let client = Client {
             id: None,
             name: req.name,
@@ -131,7 +126,7 @@ impl ClientService {
             description: req.description,
             website: req.website,
             is_active: true,
-            created_by: Some(admin_oid),
+            created_by: Some(admin_user_id.to_string()),
             created_at: None,
             updated_at: None,
         };
@@ -186,16 +181,13 @@ impl ClientService {
             }
         };
 
-        let client_oid = ObjectId::parse_str(client_id)
-            .map_err(|_| AppError::bad_request("Invalid client ID"))?;
-
         let user = User {
             id: None,
             username: req.username,
             email: req.email,
             password: Some(req.password),
             role: parsed_role,
-            client_id: Some(client_oid),
+            client_id: Some(client_id.to_string()),
             permissions: Some(permissions),
             is_active: true,
             last_login: None,
@@ -239,10 +231,10 @@ impl ClientService {
             ));
         }
 
-        let allowed_ips = if req.allowed_i_ps.is_empty() {
-            vec!["0.0.0.0/0".to_string()]
+        let allowed_ips = if req.allowed_ips.is_empty() {
+            vec!["*".to_string()]
         } else {
-            req.allowed_i_ps
+            req.allowed_ips
         };
 
         let allowed_origins = if req.allowed_origins.is_empty() {
@@ -251,16 +243,11 @@ impl ClientService {
             req.allowed_origins
         };
 
-        let client_oid = ObjectId::parse_str(client_id)
-            .map_err(|_| AppError::bad_request("Invalid client ID"))?;
-        let user_oid = ObjectId::parse_str(user_id)
-            .map_err(|_| AppError::bad_request("Invalid user ID"))?;
-
         let api_key = ApiKey {
             id: None,
             key_id: Uuid::new_v4().to_string(),
             key_value: Self::generate_api_key(),
-            client_id: client_oid,
+            client_id: client_id.to_string(),
             name: req.name,
             description: None,
             environment: "production".to_string(),
@@ -276,7 +263,7 @@ impl ClientService {
                 rotation_warning_days: 30,
             },
             is_active: true,
-            created_by: Some(user_oid),
+            created_by: Some(user_id.to_string()),
             expires_at: Some(Utc::now() + chrono::Duration::hours(24)),
             created_at: None,
             updated_at: None,
@@ -336,7 +323,7 @@ impl ClientService {
         if let Some(name) = req.name {
             updates.insert("name", name);
         }
-        if let Some(ips) = req.allowed_i_ps {
+        if let Some(ips) = req.allowed_ips {
             updates.insert("security.allowedIPs", ips);
         }
         if let Some(origins) = req.allowed_origins {
@@ -379,7 +366,7 @@ impl ClientService {
         self.validate_api_key_access(client_id, key_id, user_role, user_client_id)
             .await?;
         self.api_key_repository
-            .update_by_key_id(key_id, doc! { "isActive": is_active })
+            .update_by_key_id(key_id, bson::doc! { "isActive": is_active })
             .await
     }
 
@@ -396,7 +383,7 @@ impl ClientService {
             .await?;
 
         let new_key_value = Self::generate_api_key();
-        let updates = doc! {
+        let updates = bson::doc! {
             "keyValue": &new_key_value,
             "security.lastRotated": Utc::now(),
         };
