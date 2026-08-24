@@ -7,7 +7,6 @@ use crate::dto::response::ingest::{IngestResponse, IngestStatus};
 use crate::error::app_error::AppError;
 use crate::messaging::producer::EventProducer;
 
-
 /// Ingest service — validates and publishes API hit events to the message queue.
 ///
 /// Accepts `IngestHitRequest` (a typed struct) instead of `serde_json::Value`,
@@ -25,10 +24,8 @@ impl IngestService {
     ///
     /// Validates fields, enriches with timestamp + event_id, and publishes to RabbitMQ.
     /// Returns an `IngestResult` indicating whether the event was queued or rejected.
-    pub async fn ingest_api_hit(
-        &self,
-        req: IngestHitRequest,
-    ) -> Result<IngestResponse, AppError> {
+    #[tracing::instrument(skip(self), fields(service_name = %req.service_name, endpoint = %req.endpoint))]
+    pub async fn ingest_api_hit(&self, req: IngestHitRequest) -> Result<IngestResponse, AppError> {
         self.validate(&req)?;
 
         let event_id = Uuid::new_v4().to_string();

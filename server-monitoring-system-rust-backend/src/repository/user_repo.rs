@@ -1,9 +1,10 @@
 use async_trait::async_trait;
-use bson::{doc, oid::ObjectId, Document};
+use bson::{doc, oid::ObjectId};
 use mongodb::Database;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::role::Role;
+use crate::domain::updates::UserProfileUpdate;
 use crate::domain::user::{default_true, User, UserPermissions};
 use crate::error::app_error::AppError;
 
@@ -55,7 +56,10 @@ impl UserDocument {
 
     fn from_domain(user: &User) -> Self {
         Self {
-            id: user.id.as_deref().and_then(|id| ObjectId::parse_str(id).ok()),
+            id: user
+                .id
+                .as_deref()
+                .and_then(|id| ObjectId::parse_str(id).ok()),
             username: user.username.clone(),
             email: user.email.clone(),
             password: user.password.clone(),
@@ -80,10 +84,14 @@ pub trait UserRepository: Send + Sync {
     async fn find_by_email(&self, email: &str) -> Result<Option<User>, AppError>;
     async fn find_by_id(&self, user_id: &str) -> Result<Option<User>, AppError>;
     async fn find_by_username(&self, username: &str) -> Result<Option<User>, AppError>;
-    async fn update_profile(&self, user_id: &str, updates: Document) -> Result<Option<User>, AppError>;
+    async fn update_profile(
+        &self,
+        user_id: &str,
+        updates: UserProfileUpdate,
+    ) -> Result<Option<User>, AppError>;
     async fn deactivate(&self, user_id: &str) -> Result<Option<User>, AppError>;
     async fn update_last_login(&self, user_id: &str) -> Result<(), AppError>;
-    async fn count(&self, filter: Document) -> Result<u64, AppError>;
+    async fn count_all(&self) -> Result<u64, AppError>;
 }
 
 /// MongoDB implementation of `UserRepository`.
@@ -114,17 +122,14 @@ impl UserRepository for MongoUserRepository {
             doc.password = Some(hashed);
         }
 
-        self.collection
-            .insert_one(&doc)
-            .await
-            .map_err(|e| {
-                let err_str = format!("{}", e);
-                if err_str.contains("11000") || err_str.contains("duplicate key") {
-                    AppError::conflict("User already exists")
-                } else {
-                    AppError::from(e)
-                }
-            })?;
+        self.collection.insert_one(&doc).await.map_err(|e| {
+            let err_str = format!("{}", e);
+            if err_str.contains("11000") || err_str.contains("duplicate key") {
+                AppError::conflict("User already exists")
+            } else {
+                AppError::from(e)
+            }
+        })?;
 
         tracing::info!("User created in MongoDB: {:?}", doc.id);
         Ok(doc.to_domain())
@@ -143,27 +148,33 @@ impl UserRepository for MongoUserRepository {
     }
 
     async fn find_by_username(&self, username: &str) -> Result<Option<User>, AppError> {
-        let doc = self.collection.find_one(doc! { "username": username }).await?;
+        let doc = self
+            .collection
+            .find_one(doc! { "username": username })
+            .await?;
         Ok(doc.map(|d| d.to_domain()))
     }
 
     async fn update_profile(
         &self,
         user_id: &str,
-        updates: Document,
+        updates: UserProfileUpdate,
     ) -> Result<Option<User>, AppError> {
         let oid = ObjectId::parse_str(user_id)
             .map_err(|_| AppError::bad_request("Invalid user ID format"))?;
 
-        let mut update_doc = updates;
+        let mut update_doc = bson::Document::new();
+        if let Some(username) = updates.username {
+            update_doc.insert("username", username);
+        }
+        if let Some(email) = updates.email {
+            update_doc.insert("email", email);
+        }
         update_doc.insert("updatedAt", bson::DateTime::now());
 
         let result = self
             .collection
-            .find_one_and_update(
-                doc! { "_id": oid },
-                doc! { "$set": update_doc },
-            )
+            .find_one_and_update(doc! { "_id": oid }, doc! { "$set": update_doc })
             .return_document(mongodb::options::ReturnDocument::After)
             .await?;
 
@@ -200,8 +211,8 @@ impl UserRepository for MongoUserRepository {
         Ok(())
     }
 
-    async fn count(&self, filter: Document) -> Result<u64, AppError> {
-        let count = self.collection.count_documents(filter).await?;
+    async fn count_all(&self) -> Result<u64, AppError> {
+        let count = self.collection.count_documents(doc! {}).await?;
         Ok(count)
     }
 }

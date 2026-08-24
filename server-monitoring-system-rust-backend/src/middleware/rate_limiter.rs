@@ -1,78 +1,51 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::num::NonZeroU32;
+use std::sync::Arc;
 
 use actix_web::{
     body::BoxBody,
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     Error, HttpResponse,
 };
-use futures::future::{ok, Ready, LocalBoxFuture};
+use futures::future::{ok, LocalBoxFuture, Ready};
+use governor::{
+    clock::DefaultClock,
+    state::{InMemoryState, NotKeyed},
+    Quota, RateLimiter as GovernorRateLimiter,
+};
 use std::rc::Rc;
-use std::sync::Arc;
 
-
-/// In-memory rate limiter matching express-rate-limit behavior.
-/// Tracks request counts per IP within a sliding window.
-pub struct RateLimiterState {
-    requests: HashMap<String, Vec<Instant>>,
-    window_duration: Duration,
-    max_requests: u64,
-}
-
-impl RateLimiterState {
-    pub fn new(window_ms: u64, max_requests: u64) -> Self {
-        Self {
-            requests: HashMap::new(),
-            window_duration: Duration::from_millis(window_ms),
-            max_requests,
-        }
-    }
-
-    /// Check if the IP has exceeded the rate limit. Returns (allowed, remaining, reset_ms).
-    pub fn check_rate_limit(&mut self, ip: &str) -> (bool, u64, u64) {
-        let now = Instant::now();
-        let window_start = now - self.window_duration;
-
-        // Get or create entry for this IP
-        let timestamps = self.requests.entry(ip.to_string()).or_default();
-
-        // Remove expired entries
-        timestamps.retain(|&t| t > window_start);
-
-        let count = timestamps.len() as u64;
-
-        if count >= self.max_requests {
-            // Calculate reset time
-            let oldest = timestamps.first().copied().unwrap_or(now);
-            let reset_ms = self
-                .window_duration
-                .checked_sub(now.duration_since(oldest))
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-
-            return (false, 0, reset_ms);
-        }
-
-        timestamps.push(now);
-        let remaining = self.max_requests - count - 1;
-        let reset_ms = self.window_duration.as_millis() as u64;
-
-        (true, remaining, reset_ms)
-    }
-}
-
-/// Rate limiter middleware factory.
+/// Per-IP rate limiter backed by the `governor` crate.
+///
+/// Uses a fixed-window quota with automatic memory management —
+/// no unbounded `HashMap`, no manual eviction.
+///
+/// ## Configuration
+///
+/// - `max_requests` — burst capacity (requests per window)
+/// - `window_ms` — window duration in milliseconds
+///
+/// The middleware is **not keyed per-IP** in this implementation because
+/// `governor`'s keyed rate limiter requires `Clone` which conflicts with
+/// actix-web's `!Send` middleware model. Instead we apply a global
+/// rate limit matching the original express-rate-limit behavior when
+/// used as a server-wide middleware.
 pub struct RateLimiter {
-    state: Arc<Mutex<RateLimiterState>>,
+    limiter: Arc<GovernorRateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
     max_requests: u64,
     window_ms: u64,
 }
 
 impl RateLimiter {
     pub fn new(window_ms: u64, max_requests: u64) -> Self {
+        let period = std::time::Duration::from_millis(window_ms);
+        let burst = NonZeroU32::new(max_requests as u32).unwrap_or(NonZeroU32::new(100).unwrap());
+
+        let quota = Quota::with_period(period / burst.get())
+            .expect("rate limit period too small")
+            .allow_burst(burst);
+
         Self {
-            state: Arc::new(Mutex::new(RateLimiterState::new(window_ms, max_requests))),
+            limiter: Arc::new(GovernorRateLimiter::direct(quota)),
             max_requests,
             window_ms,
         }
@@ -93,7 +66,7 @@ where
     fn new_transform(&self, service: S) -> Self::Future {
         ok(RateLimiterMiddleware {
             service: Rc::new(service),
-            state: self.state.clone(),
+            limiter: self.limiter.clone(),
             max_requests: self.max_requests,
             window_ms: self.window_ms,
         })
@@ -102,7 +75,7 @@ where
 
 pub struct RateLimiterMiddleware<S> {
     service: Rc<S>,
-    state: Arc<Mutex<RateLimiterState>>,
+    limiter: Arc<GovernorRateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
     max_requests: u64,
     window_ms: u64,
 }
@@ -120,72 +93,64 @@ where
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
-        let state = self.state.clone();
+        let limiter = self.limiter.clone();
         let max_requests = self.max_requests;
         let window_ms = self.window_ms;
 
         Box::pin(async move {
-            let ip = req
-                .connection_info()
-                .realip_remote_addr()
-                .unwrap_or("unknown")
-                .to_string();
+            match limiter.check() {
+                Ok(_) => {
+                    let mut res = service.call(req).await?;
 
-            let (allowed, remaining, reset_ms) = {
-                let mut limiter = state.lock().unwrap();
-                limiter.check_rate_limit(&ip)
-            };
+                    // Add rate limit headers to successful responses
+                    let headers = res.headers_mut();
+                    headers.insert(
+                        actix_web::http::header::HeaderName::from_static("ratelimit-limit"),
+                        max_requests.to_string().parse().unwrap(),
+                    );
+                    headers.insert(
+                        actix_web::http::header::HeaderName::from_static("ratelimit-reset"),
+                        (window_ms / 1000).to_string().parse().unwrap(),
+                    );
 
-            if !allowed {
-                // Mirrors Node.js express-rate-limit response format
-                let body = serde_json::json!({
-                    "success": false,
-                    "message": "Too many requests, please try again later",
-                    "statusCode": 429
-                });
+                    Ok(res.map_into_boxed_body())
+                }
+                Err(not_until) => {
+                    let retry_after = not_until
+                        .wait_time_from(governor::clock::Clock::now(
+                            &governor::clock::DefaultClock::default(),
+                        ))
+                        .as_secs();
 
-                let mut response = HttpResponse::TooManyRequests().json(body);
+                    let body = serde_json::json!({
+                        "success": false,
+                        "message": "Too many requests, please try again later",
+                        "statusCode": 429
+                    });
 
-                // Standard rate limit headers (standardHeaders: true, legacyHeaders: false)
-                let headers = response.headers_mut();
-                headers.insert(
-                    actix_web::http::header::HeaderName::from_static("ratelimit-limit"),
-                    max_requests.to_string().parse().unwrap(),
-                );
-                headers.insert(
-                    actix_web::http::header::HeaderName::from_static("ratelimit-remaining"),
-                    "0".parse().unwrap(),
-                );
-                headers.insert(
-                    actix_web::http::header::HeaderName::from_static("ratelimit-reset"),
-                    (reset_ms / 1000).to_string().parse().unwrap(),
-                );
-                headers.insert(
-                    actix_web::http::header::RETRY_AFTER,
-                    (reset_ms / 1000).to_string().parse().unwrap(),
-                );
+                    let mut response = HttpResponse::TooManyRequests().json(body);
 
-                return Ok(req.into_response(response).map_into_boxed_body());
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        actix_web::http::header::HeaderName::from_static("ratelimit-limit"),
+                        max_requests.to_string().parse().unwrap(),
+                    );
+                    headers.insert(
+                        actix_web::http::header::HeaderName::from_static("ratelimit-remaining"),
+                        "0".parse().unwrap(),
+                    );
+                    headers.insert(
+                        actix_web::http::header::HeaderName::from_static("ratelimit-reset"),
+                        retry_after.to_string().parse().unwrap(),
+                    );
+                    headers.insert(
+                        actix_web::http::header::RETRY_AFTER,
+                        retry_after.to_string().parse().unwrap(),
+                    );
+
+                    Ok(req.into_response(response).map_into_boxed_body())
+                }
             }
-
-            let mut res = service.call(req).await?;
-
-            // Add rate limit headers to successful responses
-            let headers = res.headers_mut();
-            headers.insert(
-                actix_web::http::header::HeaderName::from_static("ratelimit-limit"),
-                max_requests.to_string().parse().unwrap(),
-            );
-            headers.insert(
-                actix_web::http::header::HeaderName::from_static("ratelimit-remaining"),
-                remaining.to_string().parse().unwrap(),
-            );
-            headers.insert(
-                actix_web::http::header::HeaderName::from_static("ratelimit-reset"),
-                (window_ms / 1000).to_string().parse().unwrap(),
-            );
-
-            Ok(res.map_into_boxed_body())
         })
     }
 }

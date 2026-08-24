@@ -1,11 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 
-
-
 use crate::dto::response::analytics::{
-    ApiMetricsEntryResponse, DashboardResponse, EndpointStatResponse,
-    OverallStatsResponse, TimeRange, TimeSeriesEntryResponse,
+    ApiMetricsEntryResponse, DashboardResponse, EndpointStatResponse, OverallStatsResponse,
+    TimeRange, TimeSeriesEntryResponse,
 };
 use crate::error::app_error::AppError;
 use crate::repository::metrics_repo::MetricsRepository;

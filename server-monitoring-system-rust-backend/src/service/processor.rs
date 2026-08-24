@@ -46,69 +46,79 @@ impl ProcessorService {
             "Processing event"
         );
 
+        // Extract fields we need after the move into ApiHit
+        let event_id = data.event_id.clone();
+        let client_id = data.client_id.clone();
+        let service_name = data.service_name.clone();
+        let endpoint = data.endpoint.clone();
+        let method = data.method.clone();
+        let status_code = data.status_code;
+        let latency_ms = data.latency_ms;
+        let timestamp = data.timestamp;
+
         let hit = ApiHit {
             id: None,
-            event_id: data.event_id.clone(),
-            client_id: data.client_id.clone(),
-            api_key_id: data.api_key_id.clone(),
-            service_name: data.service_name.clone(),
-            endpoint: data.endpoint.clone(),
-            method: data.method.clone(),
+            event_id: data.event_id,
+            client_id: data.client_id,
+            api_key_id: data.api_key_id,
+            service_name: data.service_name,
+            endpoint: data.endpoint,
+            method: data.method,
             status_code: data.status_code as i32,
             latency_ms: data.latency_ms,
-            ip: Some(data.ip.clone()),
+            ip: if data.ip.is_empty() {
+                None
+            } else {
+                Some(data.ip)
+            },
             user_agent: if data.user_agent.is_empty() {
                 None
             } else {
-                Some(data.user_agent.clone())
+                Some(data.user_agent)
             },
             timestamp: Some(data.timestamp),
             created_at: Some(Utc::now()),
         };
 
         // STEP 1: Save raw event to MongoDB
-        match self.api_hit_repository.save(&hit).await {
-            Ok(_) => {
-                tracing::info!(event_id = %data.event_id, "Raw event saved to MongoDB");
-            }
-            Err(e) => {
-                tracing::error!(
-                    event_id = %data.event_id,
-                    error = %e,
-                    "Critical: failed to save raw event to MongoDB"
-                );
-                return Err(e);
-            }
+        if let Err(e) = self.api_hit_repository.save(&hit).await {
+            tracing::error!(
+                event_id = %event_id,
+                error = %e,
+                "Critical: failed to save raw event to MongoDB"
+            );
+            return Err(e);
         }
+        tracing::info!(event_id = %event_id, "Raw event saved to MongoDB");
 
         // STEP 2: Upsert aggregated metrics in PostgreSQL
-        let time_bucket = Self::time_bucket(data.timestamp);
-        let error_hits: i32 = if data.status_code >= 400 { 1 } else { 0 };
+        let time_bucket = Self::time_bucket(timestamp);
+        let error_hits: i32 = if status_code >= 400 { 1 } else { 0 };
 
         if let Err(e) = self
             .metrics_repository
             .upsert_endpoint_metrics(
-                &data.client_id,
-                &data.service_name,
-                &data.endpoint,
-                &data.method,
+                &client_id,
+                &service_name,
+                &endpoint,
+                &method,
                 1,
                 error_hits,
-                data.latency_ms,
-                data.latency_ms,
-                data.latency_ms,
+                latency_ms,
+                latency_ms,
+                latency_ms,
                 time_bucket,
             )
             .await
         {
             // Non-fatal: raw event is already saved
             tracing::error!(
-                event_id = %data.event_id,
+                event_id = %event_id,
                 error = %e,
                 "Non-critical: raw event saved but metrics update failed"
             );
         } else {
-            tracing::info!(event_id = %data.event_id, "Event processed successfully");
+            tracing::info!(event_id = %event_id, "Event processed successfully");
         }
 
         Ok(())

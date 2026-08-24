@@ -11,4 +11,5 @@ pub mod event;
 pub mod ingest;
 pub mod metrics;
 pub mod role;
+pub mod updates;
 pub mod user;

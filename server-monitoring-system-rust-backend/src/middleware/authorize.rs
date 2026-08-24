@@ -3,7 +3,7 @@ use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     Error, HttpMessage, HttpResponse,
 };
-use futures::future::{ok, Ready, LocalBoxFuture};
+use futures::future::{ok, LocalBoxFuture, Ready};
 use std::rc::Rc;
 
 use crate::middleware::authenticate::AuthenticatedUser;
@@ -72,11 +72,7 @@ where
                         let res = service.call(req).await?;
                         Ok(res.map_into_boxed_body())
                     } else {
-                        let body = ResponseFormatter::error(
-                            "Insufficient permissions",
-                            403,
-                            None,
-                        );
+                        let body = ResponseFormatter::error("Insufficient permissions", 403, None);
                         let response = HttpResponse::Forbidden().json(body);
                         Ok(req.into_response(response).map_into_boxed_body())
                     }

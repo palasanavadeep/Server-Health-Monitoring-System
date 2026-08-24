@@ -6,11 +6,11 @@ use validator::Validate;
 
 use crate::app_state::AppState;
 use crate::domain::role::Role;
-use crate::middleware::authenticate::AuthenticatedUser;
-use crate::util::response::ResponseFormatter;
-use crate::util::validation::{
+use crate::dto::request::auth::{
     LoginRequest, OnboardSuperAdminRequest, RegisterRequest, UpdateProfileRequest,
 };
+use crate::middleware::authenticate::AuthenticatedUser;
+use crate::util::response::ResponseFormatter;
 
 /// POST /api/auth/onboard-super-admin
 pub async fn onboard_super_admin(
@@ -51,9 +51,8 @@ pub async fn register(
     let user = match req.extensions().get::<AuthenticatedUser>() {
         Some(u) => u.clone(),
         None => {
-            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
-                "Authentication required",
-            ));
+            return HttpResponse::Unauthorized()
+                .json(ResponseFormatter::unauthorized("Authentication required"));
         }
     };
 
@@ -77,10 +76,7 @@ pub async fn register(
 }
 
 /// POST /api/auth/login
-pub async fn login(
-    state: web::Data<AppState>,
-    body: web::Json<LoginRequest>,
-) -> HttpResponse {
+pub async fn login(state: web::Data<AppState>, body: web::Json<LoginRequest>) -> HttpResponse {
     if let Err(e) = body.validate() {
         return HttpResponse::BadRequest().json(ResponseFormatter::validation_error(Some(
             serde_json::to_value(e.to_string()).unwrap(),
@@ -112,9 +108,8 @@ pub async fn get_profile(state: web::Data<AppState>, req: HttpRequest) -> HttpRe
     let user = match req.extensions().get::<AuthenticatedUser>() {
         Some(u) => u.clone(),
         None => {
-            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
-                "Authentication required",
-            ));
+            return HttpResponse::Unauthorized()
+                .json(ResponseFormatter::unauthorized("Authentication required"));
         }
     };
 
@@ -136,16 +131,15 @@ pub async fn update_profile(
     let user = match req.extensions().get::<AuthenticatedUser>() {
         Some(u) => u.clone(),
         None => {
-            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
-                "Authentication required",
-            ));
+            return HttpResponse::Unauthorized()
+                .json(ResponseFormatter::unauthorized("Authentication required"));
         }
     };
 
-    let updates = serde_json::json!({
-        "username": body.username,
-        "email": body.email,
-    });
+    let updates = crate::domain::updates::UserProfileUpdate {
+        username: body.username.clone(),
+        email: body.email.clone(),
+    };
 
     match state
         .auth_service
@@ -161,17 +155,13 @@ pub async fn update_profile(
 }
 
 /// PATCH /api/auth/users/{userId}/deactivate
-pub async fn deactivate_user(
-    state: web::Data<AppState>,
-    path: web::Path<String>,
-) -> HttpResponse {
+pub async fn deactivate_user(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
     let user_id = path.into_inner();
 
     match state.auth_service.deactivate_user(&user_id).await {
-        Ok(user) => HttpResponse::Ok().json(ResponseFormatter::ok(
-            user,
-            "User deactivated successfully",
-        )),
+        Ok(user) => {
+            HttpResponse::Ok().json(ResponseFormatter::ok(user, "User deactivated successfully"))
+        }
         Err(e) => e.to_response(),
     }
 }

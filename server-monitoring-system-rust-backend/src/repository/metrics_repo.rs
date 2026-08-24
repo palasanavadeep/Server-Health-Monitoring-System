@@ -1,8 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sea_orm::{
-    ConnectionTrait, DatabaseConnection, DbBackend, FromQueryResult, Statement,
-};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, FromQueryResult, Statement};
 use serde::Deserialize;
 
 use crate::domain::metrics::{ApiMetricsEntry, EndpointStat, OverallStats, TimeSeriesEntry};
@@ -348,7 +346,12 @@ impl MetricsRepository for SeaOrmMetricsRepository {
                 ORDER BY time_bucket DESC
                 LIMIT $4
                 "#,
-                vec![cid.into(), start_time.into(), end_time.into(), safe_limit.into()],
+                vec![
+                    cid.into(),
+                    start_time.into(),
+                    end_time.into(),
+                    safe_limit.into(),
+                ],
             )
         } else {
             (

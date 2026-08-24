@@ -36,11 +36,7 @@ pub async fn ingest_hit(
 
     // Inject auth context into the typed request
     let mut hit = body.into_inner();
-    hit.client_id = validated
-        .client
-        .id
-        .clone()
-        .unwrap_or_default();
+    hit.client_id = validated.client.id.clone().unwrap_or_default();
     hit.api_key_id = validated.api_key.id.clone();
     hit.ip = Some(ip);
     hit.user_agent = Some(user_agent);

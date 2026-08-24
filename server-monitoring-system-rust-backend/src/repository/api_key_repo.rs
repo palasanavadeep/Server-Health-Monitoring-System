@@ -1,11 +1,12 @@
 use async_trait::async_trait;
-use bson::{doc, oid::ObjectId, Document};
+use bson::{doc, oid::ObjectId};
 use futures::TryStreamExt;
 use mongodb::Database;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::api_key::{ApiKey, ApiKeyPermissions, ApiKeySecurity};
 use crate::domain::client::Client;
+use crate::domain::updates::ApiKeyUpdate;
 use crate::domain::user::default_true;
 use crate::error::app_error::AppError;
 
@@ -93,7 +94,10 @@ impl ApiKeyDocument {
 
     fn from_domain(key: &ApiKey) -> Self {
         Self {
-            id: key.id.as_deref().and_then(|id| ObjectId::parse_str(id).ok()),
+            id: key
+                .id
+                .as_deref()
+                .and_then(|id| ObjectId::parse_str(id).ok()),
             key_id: key.key_id.clone(),
             key_value: key.key_value.clone(),
             client_id: ObjectId::parse_str(&key.client_id).unwrap_or_else(|_| ObjectId::new()),
@@ -118,10 +122,18 @@ impl ApiKeyDocument {
 #[async_trait]
 pub trait ApiKeyRepository: Send + Sync {
     async fn create(&self, api_key: ApiKey) -> Result<ApiKey, AppError>;
-    async fn find_by_key_value(&self, key_value: &str, include_inactive: bool) -> Result<Option<(ApiKey, Client)>, AppError>;
+    async fn find_by_key_value(
+        &self,
+        key_value: &str,
+        include_inactive: bool,
+    ) -> Result<Option<(ApiKey, Client)>, AppError>;
     async fn find_by_client_id(&self, client_id: &str) -> Result<Vec<ApiKey>, AppError>;
     async fn find_by_key_id(&self, key_id: &str) -> Result<Option<ApiKey>, AppError>;
-    async fn update_by_key_id(&self, key_id: &str, update_data: Document) -> Result<Option<ApiKey>, AppError>;
+    async fn update_by_key_id(
+        &self,
+        key_id: &str,
+        update_data: ApiKeyUpdate,
+    ) -> Result<Option<ApiKey>, AppError>;
     async fn delete_by_key_id(&self, key_id: &str) -> Result<bool, AppError>;
 }
 
@@ -171,10 +183,7 @@ impl ApiKeyRepository for MongoApiKeyRepository {
 
         match key_doc {
             Some(doc) => {
-                let client = self
-                    .client_repo
-                    .find_by_id(&doc.client_id.to_hex())
-                    .await?;
+                let client = self.client_repo.find_by_id(&doc.client_id.to_hex()).await?;
 
                 match client {
                     Some(c) => Ok(Some((doc.to_domain(), c))),
@@ -211,17 +220,42 @@ impl ApiKeyRepository for MongoApiKeyRepository {
     async fn update_by_key_id(
         &self,
         key_id: &str,
-        update_data: Document,
+        update_data: ApiKeyUpdate,
     ) -> Result<Option<ApiKey>, AppError> {
-        let mut set_doc = update_data;
+        let mut set_doc = bson::Document::new();
+
+        if let Some(name) = update_data.name {
+            set_doc.insert("name", name);
+        }
+        if let Some(key_value) = update_data.key_value {
+            set_doc.insert("keyValue", key_value);
+        }
+        if let Some(is_active) = update_data.is_active {
+            set_doc.insert("isActive", is_active);
+        }
+        if let Some(ips) = update_data.allowed_ips {
+            set_doc.insert("security.allowedIPs", ips);
+        }
+        if let Some(origins) = update_data.allowed_origins {
+            set_doc.insert("security.allowedOrigins", origins);
+        }
+        if let Some(can_ingest) = update_data.can_ingest {
+            set_doc.insert("permissions.canIngest", can_ingest);
+        }
+        if let Some(can_read) = update_data.can_read_analytics {
+            set_doc.insert("permissions.canReadAnalytics", can_read);
+        }
+        if let Some(rotated_at) = update_data.last_rotated {
+            set_doc.insert(
+                "security.lastRotated",
+                bson::DateTime::from_chrono(rotated_at),
+            );
+        }
         set_doc.insert("updatedAt", bson::DateTime::now());
 
         let result = self
             .collection
-            .find_one_and_update(
-                doc! { "keyId": key_id },
-                doc! { "$set": set_doc },
-            )
+            .find_one_and_update(doc! { "keyId": key_id }, doc! { "$set": set_doc })
             .return_document(mongodb::options::ReturnDocument::After)
             .await?;
 
@@ -229,10 +263,7 @@ impl ApiKeyRepository for MongoApiKeyRepository {
     }
 
     async fn delete_by_key_id(&self, key_id: &str) -> Result<bool, AppError> {
-        let result = self
-            .collection
-            .delete_one(doc! { "keyId": key_id })
-            .await?;
+        let result = self.collection.delete_one(doc! { "keyId": key_id }).await?;
         Ok(result.deleted_count > 0)
     }
 }

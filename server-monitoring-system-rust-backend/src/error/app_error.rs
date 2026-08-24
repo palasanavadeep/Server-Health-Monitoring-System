@@ -1,7 +1,6 @@
 use actix_web::{http::StatusCode, HttpResponse};
 use serde_json::Value;
 
-
 use crate::util::response::ResponseFormatter;
 
 /// Centralized application error type.
@@ -19,24 +18,16 @@ pub enum AppError {
     },
 
     #[error("{message}")]
-    Unauthorized {
-        message: String,
-    },
+    Unauthorized { message: String },
 
     #[error("{message}")]
-    Forbidden {
-        message: String,
-    },
+    Forbidden { message: String },
 
     #[error("{message}")]
-    NotFound {
-        message: String,
-    },
+    NotFound { message: String },
 
     #[error("{message}")]
-    Conflict {
-        message: String,
-    },
+    Conflict { message: String },
 
     #[error("{message}")]
     Internal {
@@ -136,8 +127,8 @@ impl AppError {
 
     /// Convert to an HTTP response using the standard response format.
     pub fn to_response(&self) -> HttpResponse {
-        let status = StatusCode::from_u16(self.status_code())
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status =
+            StatusCode::from_u16(self.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
         let errors = match self {
             Self::WithErrors { errors, .. } => Some(errors.clone()),

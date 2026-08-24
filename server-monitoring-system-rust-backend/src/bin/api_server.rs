@@ -104,7 +104,7 @@ async fn main() -> std::io::Result<()> {
     let event_producer = EventProducer::new(
         channel,
         config.rabbitmq.clone(),
-        circuit_breaker,
+        circuit_breaker.clone(),
         retry_strategy,
     );
 
@@ -119,6 +119,7 @@ async fn main() -> std::io::Result<()> {
         ingest_service,
         sea_db,
         config.clone(),
+        circuit_breaker,
     ));
 
     let port = config.port;
@@ -128,7 +129,7 @@ async fn main() -> std::io::Result<()> {
 
     // ── HTTP server ─────────────────────────────────────────────────────────
 
-    HttpServer::new(move || {
+    let server = HttpServer::new(move || {
         let cors = actix_cors::Cors::default()
             .allow_any_origin()
             .allow_any_method()
@@ -142,12 +143,24 @@ async fn main() -> std::io::Result<()> {
             .configure(|cfg| routes::configure(cfg, &config_clone))
             // 404 fallback
             .default_service(web::route().to(|| async {
-                HttpResponse::NotFound().json(ResponseFormatter::not_found(
-                    "Endpoint not found",
-                ))
+                HttpResponse::NotFound().json(ResponseFormatter::not_found("Endpoint not found"))
             }))
     })
     .bind(format!("0.0.0.0:{}", port))?
-    .run()
-    .await
+    // Allow 30 s for in-flight requests to complete on shutdown
+    .shutdown_timeout(30)
+    .run();
+
+    // Obtain a handle for graceful shutdown signaling
+    let server_handle = server.handle();
+
+    // Spawn a background task that listens for CTRL+C and stops the server
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            tracing::info!("Received shutdown signal, stopping server gracefully...");
+            server_handle.stop(true).await;
+        }
+    });
+
+    server.await
 }

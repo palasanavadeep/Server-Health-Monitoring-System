@@ -1,8 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::dto::response::auth::UserResponse;
-
 use super::role::Role;
 
 /// Shared default helper for boolean `true` fields.
@@ -57,24 +55,6 @@ pub struct UserPermissions {
     pub can_view_analytics: bool,
     #[serde(default)]
     pub can_export_data: bool,
-}
-
-impl User {
-    /// Convert to a response DTO (in `dto/response/auth.rs`), stripping the password.
-    pub fn to_response(&self) -> UserResponse {
-        UserResponse {
-            id: self.id.clone().unwrap_or_default(),
-            username: self.username.clone(),
-            email: self.email.clone(),
-            role: self.role,
-            client_id: self.client_id.clone(),
-            permissions: self.permissions.clone(),
-            is_active: self.is_active,
-            last_login: self.last_login,
-            created_at: self.created_at,
-            updated_at: self.updated_at,
-        }
-    }
 }
 
 /// JWT claims payload embedded in authentication tokens.

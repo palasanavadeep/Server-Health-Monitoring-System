@@ -3,8 +3,8 @@ use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     Error, HttpMessage, HttpResponse,
 };
-use futures::future::{ok, Ready, LocalBoxFuture};
-use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+use futures::future::{ok, LocalBoxFuture, Ready};
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use std::rc::Rc;
 
 use crate::config::settings::AppConfig;
@@ -77,18 +77,13 @@ where
 
         Box::pin(async move {
             // Extract token from authToken cookie (mirrors Node.js: req.cookies.authToken)
-            let token = req
-                .cookie("authToken")
-                .map(|c| c.value().to_string());
+            let token = req.cookie("authToken").map(|c| c.value().to_string());
 
             let token = match token {
                 Some(t) if !t.is_empty() => t,
                 _ => {
-                    let body = ResponseFormatter::error(
-                        "Authentication token is required",
-                        401,
-                        None,
-                    );
+                    let body =
+                        ResponseFormatter::error("Authentication token is required", 401, None);
                     let response = HttpResponse::Unauthorized().json(body);
                     return Ok(req.into_response(response).map_into_boxed_body());
                 }

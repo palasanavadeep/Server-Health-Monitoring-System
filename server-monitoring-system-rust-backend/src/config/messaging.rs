@@ -1,7 +1,5 @@
 use lapin::{
-    options::QueueDeclareOptions,
-    types::FieldTable,
-    Channel, Connection, ConnectionProperties,
+    options::QueueDeclareOptions, types::FieldTable, Channel, Connection, ConnectionProperties,
 };
 
 use super::settings::RabbitMqConfig;
@@ -43,8 +41,7 @@ impl RabbitMqConnection {
 
         let connection = Connection::connect(
             &self.config.url,
-            ConnectionProperties::default()
-                .with_connection_name("server-monitoring".into()),
+            ConnectionProperties::default().with_connection_name("server-monitoring".into()),
         )
         .await?;
 

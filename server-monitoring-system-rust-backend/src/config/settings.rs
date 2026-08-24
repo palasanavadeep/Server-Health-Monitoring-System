@@ -27,6 +27,9 @@ const DEFAULT_CB_HALF_OPEN_ATTEMPTS: u32 = 3;
 const DEFAULT_RETRY_MAX_DELAY_MS: u64 = 30_000;
 const DEFAULT_RETRY_JITTER_FACTOR: f64 = 0.3;
 
+// Password policy defaults
+const DEFAULT_PASSWORD_MIN_LENGTH: usize = 8;
+
 // Consumer defaults
 const DEFAULT_CONSUMER_STARTUP_MAX_RETRIES: u32 = 5;
 const DEFAULT_CONSUMER_STARTUP_BASE_DELAY_MS: u64 = 5_000;
@@ -55,6 +58,7 @@ pub struct AppConfig {
     pub cookie: CookieConfig,
     pub resilience: ResilienceConfig,
     pub consumer: ConsumerConfig,
+    pub password_policy: PasswordPolicyConfig,
 
     /// Legacy API key list (kept for backward compatibility).
     pub valid_api_keys: Vec<String>,
@@ -131,6 +135,16 @@ pub struct ResilienceConfig {
     pub retry_jitter_factor: f64,
 }
 
+/// Password strength policy — loaded once at startup.
+#[derive(Debug, Clone)]
+pub struct PasswordPolicyConfig {
+    pub min_length: usize,
+    pub require_uppercase: bool,
+    pub require_lowercase: bool,
+    pub require_numbers: bool,
+    pub require_symbols: bool,
+}
+
 /// Consumer-specific operational parameters.
 ///
 /// Tuned separately from the API server's resilience config so the consumer
@@ -192,7 +206,10 @@ impl AppConfig {
                 url: env_or("RABBITMQ_URL", DEFAULT_RABBITMQ_URL),
                 queue: env_or("RABBITMQ_QUEUE", DEFAULT_RABBITMQ_QUEUE),
                 publisher_confirms: env_flag("RABBITMQ_PUBLISHER_CONFIRMS"),
-                retry_attempts: parse_env("RABBITMQ_RETRY_ATTEMPTS", DEFAULT_RABBITMQ_RETRY_ATTEMPTS),
+                retry_attempts: parse_env(
+                    "RABBITMQ_RETRY_ATTEMPTS",
+                    DEFAULT_RABBITMQ_RETRY_ATTEMPTS,
+                ),
                 retry_delay: parse_env("RABBITMQ_RETRY_DELAY", DEFAULT_RABBITMQ_RETRY_DELAY_MS),
             },
 
@@ -255,6 +272,14 @@ impl AppConfig {
                     "CONSUMER_IDEMPOTENCY_CACHE_SIZE",
                     DEFAULT_CONSUMER_IDEMPOTENCY_CACHE_SIZE,
                 ),
+            },
+
+            password_policy: PasswordPolicyConfig {
+                min_length: parse_env("PASSWORD_MIN_LENGTH", DEFAULT_PASSWORD_MIN_LENGTH),
+                require_uppercase: env_flag_or("PASSWORD_REQUIRE_UPPERCASE", true),
+                require_lowercase: env_flag_or("PASSWORD_REQUIRE_LOWERCASE", true),
+                require_numbers: env_flag_or("PASSWORD_REQUIRE_NUMBERS", true),
+                require_symbols: env_flag_or("PASSWORD_REQUIRE_SYMBOLS", true),
             },
 
             valid_api_keys: env::var("VALID_API_KEYS")
@@ -344,4 +369,12 @@ fn env_flag(key: &str) -> bool {
     env::var(key)
         .map(|v| v.to_lowercase() == "true")
         .unwrap_or(false)
+}
+
+/// Read a boolean env var with a non-false default.
+fn env_flag_or(key: &str, default: bool) -> bool {
+    match env::var(key) {
+        Ok(v) => v.to_lowercase() == "true",
+        Err(_) => default,
+    }
 }

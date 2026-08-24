@@ -9,7 +9,7 @@
 //! ```
 //!
 //! # Usage in handlers
-//! ```rust
+//! ```rust,ignore
 //! use actix_web::HttpResponse;
 //! use crate::util::response::ResponseFormatter;
 //!
@@ -153,7 +153,12 @@ impl ResponseFormatter {
     // ── Paginated ─────────────────────────────────────────────────────────────
 
     /// HTTP 200 OK — paginated list response.
-    pub fn paged<T: Serialize>(data: Vec<T>, page: i64, limit: i64, total: i64) -> ApiPagedResponse<T> {
+    pub fn paged<T: Serialize>(
+        data: Vec<T>,
+        page: i64,
+        limit: i64,
+        total: i64,
+    ) -> ApiPagedResponse<T> {
         let total_pages = if limit > 0 {
             (total as f64 / limit as f64).ceil() as i64
         } else {

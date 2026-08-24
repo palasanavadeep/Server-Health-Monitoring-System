@@ -1,10 +1,10 @@
-use bson::doc;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use std::sync::Arc;
 
 use crate::config::settings::AppConfig;
 use crate::domain::role::Role;
+use crate::domain::updates::UserProfileUpdate;
 use crate::domain::user::{JwtClaims, User};
 use crate::dto::response::auth::UserResponse;
 use crate::error::app_error::AppError;
@@ -28,18 +28,19 @@ impl AuthService {
     }
 
     /// Onboard the first super admin (only when no users exist).
+    #[tracing::instrument(skip(self, password), fields(email = %email))]
     pub async fn onboard_super_admin(
         &self,
         username: &str,
         email: &str,
         password: &str,
     ) -> Result<UserResponse, AppError> {
-        let count = self.user_repository.count(doc! {}).await?;
+        let count = self.user_repository.count_all().await?;
         if count > 0 {
             return Err(AppError::bad_request("Super admin already exists"));
         }
 
-        let validation = SecurityUtils::validate_password(password);
+        let validation = SecurityUtils::validate_password(password, &self.config.password_policy);
         if !validation.success {
             return Err(AppError::bad_request(validation.errors.join(", ")));
         }
@@ -59,10 +60,11 @@ impl AuthService {
         };
 
         let created = self.user_repository.create(user).await?;
-        Ok(created.to_response())
+        Ok(created.into())
     }
 
     /// Register a new user (admin-only operation).
+    #[tracing::instrument(skip(self, password), fields(email = %email, role = %role))]
     pub async fn register(
         &self,
         username: &str,
@@ -70,7 +72,7 @@ impl AuthService {
         password: &str,
         role: &str,
     ) -> Result<UserResponse, AppError> {
-        let validation = SecurityUtils::validate_password(password);
+        let validation = SecurityUtils::validate_password(password, &self.config.password_policy);
         if !validation.success {
             return Err(AppError::bad_request(validation.errors.join(", ")));
         }
@@ -79,7 +81,9 @@ impl AuthService {
             return Err(AppError::conflict("User with this email already exists"));
         }
 
-        let parsed_role: Role = role.parse().map_err(|_| AppError::bad_request("Invalid role"))?;
+        let parsed_role: Role = role
+            .parse()
+            .map_err(|_| AppError::bad_request("Invalid role"))?;
 
         let user = User {
             id: None,
@@ -96,10 +100,11 @@ impl AuthService {
         };
 
         let created = self.user_repository.create(user).await?;
-        Ok(created.to_response())
+        Ok(created.into())
     }
 
     /// Login and return JWT token.
+    #[tracing::instrument(skip(self, password), fields(email = %email))]
     pub async fn login(
         &self,
         email: &str,
@@ -109,7 +114,7 @@ impl AuthService {
             .user_repository
             .find_by_email(email)
             .await?
-            .ok_or_else(|| AppError::unauthorized("Invliad Credentials"))?;
+            .ok_or_else(|| AppError::unauthorized("Invalid credentials"))?;
 
         if !user.is_active {
             return Err(AppError::forbidden("Account is deactivated"));
@@ -124,14 +129,14 @@ impl AuthService {
             .map_err(|e| AppError::internal(format!("Password verification failed: {}", e)))?;
 
         if !is_valid {
-            return Err(AppError::unauthorized("Invliad Credentials"));
+            return Err(AppError::unauthorized("Invalid credentials"));
         }
 
         let user_id_str = user.id.clone().unwrap_or_default();
         self.user_repository.update_last_login(&user_id_str).await?;
 
         let token = self.generate_token(&user)?;
-        Ok((user.to_response(), token))
+        Ok((user.into(), token))
     }
 
     /// Get user profile by ID.
@@ -141,35 +146,26 @@ impl AuthService {
             .find_by_id(user_id)
             .await?
             .ok_or_else(|| AppError::not_found("User not found"))?;
-        Ok(user.to_response())
+        Ok(user.into())
     }
 
     /// Update user profile fields.
     pub async fn update_profile(
         &self,
         user_id: &str,
-        updates: serde_json::Value,
+        updates: UserProfileUpdate,
     ) -> Result<UserResponse, AppError> {
-        let mut update_doc = bson::Document::new();
-
-        if let Some(username) = updates.get("username").and_then(|v| v.as_str()) {
-            update_doc.insert("username", username);
-        }
-        if let Some(email) = updates.get("email").and_then(|v| v.as_str()) {
-            update_doc.insert("email", email);
-        }
-
-        if update_doc.is_empty() {
+        if updates.is_empty() {
             return Err(AppError::bad_request("No valid fields to update"));
         }
 
         let user = self
             .user_repository
-            .update_profile(user_id, update_doc)
+            .update_profile(user_id, updates)
             .await?
             .ok_or_else(|| AppError::not_found("User not found"))?;
 
-        Ok(user.to_response())
+        Ok(user.into())
     }
 
     /// Deactivate a user account.
@@ -179,7 +175,7 @@ impl AuthService {
             .deactivate(user_id)
             .await?
             .ok_or_else(|| AppError::not_found("User not found"))?;
-        Ok(user.to_response())
+        Ok(user.into())
     }
 
     /// Check if user has super_admin role.

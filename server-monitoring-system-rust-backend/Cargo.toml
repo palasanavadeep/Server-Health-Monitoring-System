@@ -88,6 +88,9 @@ thiserror = "2"
 # ── Async Utilities ───────────────────────────────────────────────────────────
 async-trait  = "0.1"
 tokio-stream = "0.1"
+lru = "0.18.2"
+tokio-util = "0.7.19"
+governor = "0.10.4"
 
 [profile.release]
 opt-level     = 3

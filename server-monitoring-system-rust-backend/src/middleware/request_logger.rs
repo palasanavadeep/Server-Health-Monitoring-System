@@ -1,14 +1,22 @@
 use actix_web::{
     body::BoxBody,
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
-    Error,
+    Error, HttpMessage,
 };
-use futures::future::{ok, Ready, LocalBoxFuture};
+use futures::future::{ok, LocalBoxFuture, Ready};
 use std::rc::Rc;
 use std::time::Instant;
+use uuid::Uuid;
 
-/// Request logger middleware - logs method, path, status, and duration.
-/// Mirrors Node.js requestLogger middleware.
+/// Request correlation ID — inserted into request extensions and response headers.
+///
+/// Downstream handlers can extract this from `req.extensions().get::<RequestId>()`
+/// to correlate logs across the request lifecycle.
+#[derive(Debug, Clone)]
+pub struct RequestId(pub String);
+
+/// Request logger middleware — logs method, path, status, duration, and
+/// a unique correlation ID per request.
 pub struct RequestLogger;
 
 impl<S, B> Transform<S, ServiceRequest> for RequestLogger
@@ -54,14 +62,32 @@ where
             .unwrap_or("unknown")
             .to_string();
 
+        // Generate or extract correlation ID
+        let request_id = req
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+        // Inject into request extensions for downstream handlers
+        req.extensions_mut().insert(RequestId(request_id.clone()));
+
         let start = Instant::now();
 
         Box::pin(async move {
-            let res = service.call(req).await?;
+            let mut res = service.call(req).await?;
             let elapsed = start.elapsed().as_millis();
             let status = res.status().as_u16();
 
+            // Attach correlation ID to response
+            res.headers_mut().insert(
+                actix_web::http::header::HeaderName::from_static("x-request-id"),
+                request_id.parse().unwrap(),
+            );
+
             tracing::info!(
+                request_id = %request_id,
                 method = %method,
                 path = %path,
                 status = status,

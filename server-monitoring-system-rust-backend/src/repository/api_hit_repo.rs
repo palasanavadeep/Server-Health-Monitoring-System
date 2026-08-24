@@ -34,7 +34,10 @@ struct ApiHitDocument {
 impl ApiHitDocument {
     fn from_domain(hit: &ApiHit) -> Self {
         Self {
-            id: hit.id.as_deref().and_then(|id| ObjectId::parse_str(id).ok()),
+            id: hit
+                .id
+                .as_deref()
+                .and_then(|id| ObjectId::parse_str(id).ok()),
             event_id: hit.event_id.clone(),
             client_id: ObjectId::parse_str(&hit.client_id).unwrap_or_else(|_| ObjectId::new()),
             api_key_id: hit
@@ -63,7 +66,8 @@ pub trait ApiHitRepository: Send + Sync {
     async fn save(&self, hit: &ApiHit) -> Result<bool, AppError>;
 
     /// Delete hits with a timestamp older than `before`.
-    async fn delete_old_hits(&self, before: chrono::DateTime<chrono::Utc>) -> Result<u64, AppError>;
+    async fn delete_old_hits(&self, before: chrono::DateTime<chrono::Utc>)
+        -> Result<u64, AppError>;
 }
 
 /// MongoDB implementation of `ApiHitRepository`.
@@ -101,7 +105,10 @@ impl ApiHitRepository for MongoApiHitRepository {
         }
     }
 
-    async fn delete_old_hits(&self, before: chrono::DateTime<chrono::Utc>) -> Result<u64, AppError> {
+    async fn delete_old_hits(
+        &self,
+        before: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, AppError> {
         let bson_before = bson::DateTime::from_chrono(before);
         let result = self
             .collection

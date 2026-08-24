@@ -5,10 +5,11 @@ use uuid::Uuid;
 use crate::domain::api_key::{ApiKey, ApiKeyPermissions, ApiKeySecurity};
 use crate::domain::client::Client;
 use crate::domain::role::{self, Role};
+use crate::domain::updates::ApiKeyUpdate;
 use crate::domain::user::{User, UserPermissions};
 use crate::dto::request::client::{
-    CreateApiKeyRequest, CreateClientRequest, CreateClientUserRequest,
-    RotateApiKeyRequest, UpdateApiKeyRequest,
+    CreateApiKeyRequest, CreateClientRequest, CreateClientUserRequest, RotateApiKeyRequest,
+    UpdateApiKeyRequest,
 };
 use crate::dto::response::auth::UserResponse;
 use crate::error::app_error::AppError;
@@ -42,7 +43,13 @@ impl ClientService {
     fn generate_slug(name: &str) -> String {
         name.to_lowercase()
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' { c } else { ' ' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    ' '
+                }
+            })
             .collect::<String>()
             .split_whitespace()
             .collect::<Vec<&str>>()
@@ -152,10 +159,7 @@ impl ClientService {
             return Err(AppError::forbidden("Access denied"));
         }
 
-        let role_str = req
-            .role
-            .as_deref()
-            .unwrap_or(Role::ClientViewer.as_str());
+        let role_str = req.role.as_deref().unwrap_or(Role::ClientViewer.as_str());
 
         if !role::is_valid_client_role(role_str) {
             return Err(AppError::bad_request("Invalid role for client user"));
@@ -204,7 +208,7 @@ impl ClientService {
             "Client user created"
         );
 
-        Ok(created.to_response())
+        Ok(created.into())
     }
 
     /// Create an API key for a client.
@@ -318,23 +322,14 @@ impl ClientService {
         self.validate_api_key_access(client_id, key_id, user_role, user_client_id)
             .await?;
 
-        let mut updates = bson::Document::new();
-
-        if let Some(name) = req.name {
-            updates.insert("name", name);
-        }
-        if let Some(ips) = req.allowed_ips {
-            updates.insert("security.allowedIPs", ips);
-        }
-        if let Some(origins) = req.allowed_origins {
-            updates.insert("security.allowedOrigins", origins);
-        }
-        if let Some(can_ingest) = req.can_ingest {
-            updates.insert("permissions.canIngest", can_ingest);
-        }
-        if let Some(can_read) = req.can_read {
-            updates.insert("permissions.canReadAnalytics", can_read);
-        }
+        let updates = ApiKeyUpdate {
+            name: req.name,
+            allowed_ips: req.allowed_ips,
+            allowed_origins: req.allowed_origins,
+            can_ingest: req.can_ingest,
+            can_read_analytics: req.can_read,
+            ..Default::default()
+        };
 
         self.api_key_repository
             .update_by_key_id(key_id, updates)
@@ -365,8 +360,12 @@ impl ClientService {
     ) -> Result<Option<ApiKey>, AppError> {
         self.validate_api_key_access(client_id, key_id, user_role, user_client_id)
             .await?;
+        let updates = ApiKeyUpdate {
+            is_active: Some(is_active),
+            ..Default::default()
+        };
         self.api_key_repository
-            .update_by_key_id(key_id, bson::doc! { "isActive": is_active })
+            .update_by_key_id(key_id, updates)
             .await
     }
 
@@ -383,9 +382,10 @@ impl ClientService {
             .await?;
 
         let new_key_value = Self::generate_api_key();
-        let updates = bson::doc! {
-            "keyValue": &new_key_value,
-            "security.lastRotated": Utc::now(),
+        let updates = ApiKeyUpdate {
+            key_value: Some(new_key_value),
+            last_rotated: Some(Utc::now()),
+            ..Default::default()
         };
 
         self.api_key_repository

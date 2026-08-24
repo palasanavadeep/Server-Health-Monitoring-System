@@ -120,9 +120,8 @@ pub async fn get_stats(
     let user = match get_user(&req) {
         Some(u) => u,
         None => {
-            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
-                "Authentication required",
-            ))
+            return HttpResponse::Unauthorized()
+                .json(ResponseFormatter::unauthorized("Authentication required"))
         }
     };
 
@@ -159,9 +158,8 @@ pub async fn get_dashboard(
     let user = match get_user(&req) {
         Some(u) => u,
         None => {
-            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
-                "Authentication required",
-            ))
+            return HttpResponse::Unauthorized()
+                .json(ResponseFormatter::unauthorized("Authentication required"))
         }
     };
 
@@ -197,13 +195,10 @@ pub async fn get_apis_metrics(
     let user = match get_user(&req) {
         Some(u) => u,
         None => {
-            return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
-                "Authentication required",
-            ))
+            return HttpResponse::Unauthorized()
+                .json(ResponseFormatter::unauthorized("Authentication required"))
         }
     };
-
-
 
     let client_id = match resolve_client_id(&state, &user, query.client_id.as_deref()).await {
         Ok(c) => c,

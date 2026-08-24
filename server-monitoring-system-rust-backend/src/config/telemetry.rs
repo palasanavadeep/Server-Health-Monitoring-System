@@ -11,8 +11,7 @@ pub fn init_telemetry(environment: &str) {
     let is_production = environment == "production";
 
     let level = if is_production { "info" } else { "debug" };
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
     // File appenders
     let error_file = rolling::never("logs", "error.log");

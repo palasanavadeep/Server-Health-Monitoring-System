@@ -110,10 +110,7 @@ impl CircuitBreaker {
                 let count = self.failure_count.fetch_add(1, Ordering::Relaxed) + 1;
                 if count >= self.failure_threshold {
                     *state = CircuitState::Open;
-                    tracing::warn!(
-                        "Circuit breaker: CLOSED -> OPEN (failures: {})",
-                        count
-                    );
+                    tracing::warn!("Circuit breaker: CLOSED -> OPEN (failures: {})", count);
                 }
             }
             CircuitState::HalfOpen => {

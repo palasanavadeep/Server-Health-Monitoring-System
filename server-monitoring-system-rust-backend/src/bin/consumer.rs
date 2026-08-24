@@ -37,7 +37,7 @@ async fn main() {
         tracing::info!(attempt = attempt + 1, "Starting consumer");
 
         match start_consumer(&config).await {
-            Ok(consumer) => {
+            Ok((consumer, handle)) => {
                 tracing::info!("Consumer started successfully");
 
                 // Block until CTRL+C
@@ -48,11 +48,12 @@ async fn main() {
                 tracing::info!("Received shutdown signal, stopping gracefully...");
                 consumer.stop();
 
-                // Allow in-flight messages to drain — duration from config
-                tokio::time::sleep(tokio::time::Duration::from_secs(
-                    config.consumer.graceful_shutdown_secs,
-                ))
-                .await;
+                // Wait for the consume loop to finish draining, with a timeout
+                let drain_timeout =
+                    tokio::time::Duration::from_secs(config.consumer.graceful_shutdown_secs);
+                if tokio::time::timeout(drain_timeout, handle).await.is_err() {
+                    tracing::warn!("Consumer did not drain within timeout, forcing exit");
+                }
                 break;
             }
             Err(e) => {
@@ -79,7 +80,8 @@ async fn main() {
 
 async fn start_consumer(
     config: &AppConfig,
-) -> Result<EventConsumer, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(EventConsumer, tokio::task::JoinHandle<()>), Box<dyn std::error::Error + Send + Sync>>
+{
     let max_retries = config.consumer.db_connect_max_retries;
     let mut retries = 0u32;
 
@@ -166,7 +168,7 @@ async fn start_consumer(
         config.consumer.idempotency_cache_size,
     );
 
-    consumer.start().await?;
+    let handle = consumer.start().await?;
 
-    Ok(consumer)
+    Ok((consumer, handle))
 }

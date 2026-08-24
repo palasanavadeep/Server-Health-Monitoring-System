@@ -30,9 +30,11 @@ pub async fn validate_api_key(
     let api_key_value = match api_key_value {
         Some(k) if !k.is_empty() => k,
         _ => {
-            return Err(HttpResponse::Unauthorized().json(
-                ResponseFormatter::error("API key is required", 401, None),
-            ));
+            return Err(HttpResponse::Unauthorized().json(ResponseFormatter::error(
+                "API key is required",
+                401,
+                None,
+            )));
         }
     };
 
@@ -45,23 +47,31 @@ pub async fn validate_api_key(
     let (client, api_key) = match result {
         Ok(Some((client, api_key))) => (client, api_key),
         Ok(None) => {
-            return Err(HttpResponse::Unauthorized().json(
-                ResponseFormatter::error("Invalid API key", 401, None),
-            ));
+            return Err(HttpResponse::Unauthorized().json(ResponseFormatter::error(
+                "Invalid API key",
+                401,
+                None,
+            )));
         }
         Err(e) => {
             tracing::error!("Error validating API key: {}", e);
-            return Err(HttpResponse::InternalServerError().json(
-                ResponseFormatter::error("Internal server error", 500, None),
-            ));
+            return Err(
+                HttpResponse::InternalServerError().json(ResponseFormatter::error(
+                    "Internal server error",
+                    500,
+                    None,
+                )),
+            );
         }
     };
 
     // Check if client is active
     if !client.is_active {
-        return Err(HttpResponse::Forbidden().json(
-            ResponseFormatter::error("Client account is deactivated", 403, None),
-        ));
+        return Err(HttpResponse::Forbidden().json(ResponseFormatter::error(
+            "Client account is deactivated",
+            403,
+            None,
+        )));
     }
 
     // Check IP restrictions
@@ -77,9 +87,11 @@ pub async fn validate_api_key(
             client_ip,
             api_key.key_id
         );
-        return Err(HttpResponse::Forbidden().json(
-            ResponseFormatter::error("IP address not allowed", 403, None),
-        ));
+        return Err(HttpResponse::Forbidden().json(ResponseFormatter::error(
+            "IP address not allowed",
+            403,
+            None,
+        )));
     }
 
     // Check Origin restrictions
@@ -91,17 +103,21 @@ pub async fn validate_api_key(
                 origin,
                 api_key.key_id
             );
-            return Err(HttpResponse::Forbidden().json(
-                ResponseFormatter::error("Origin not allowed", 403, None),
-            ));
+            return Err(HttpResponse::Forbidden().json(ResponseFormatter::error(
+                "Origin not allowed",
+                403,
+                None,
+            )));
         }
     }
 
     // Check canIngest permission
     if !api_key.permissions.can_ingest {
-        return Err(HttpResponse::Forbidden().json(
-            ResponseFormatter::error("API key does not have ingest permission", 403, None),
-        ));
+        return Err(HttpResponse::Forbidden().json(ResponseFormatter::error(
+            "API key does not have ingest permission",
+            403,
+            None,
+        )));
     }
 
     Ok(ValidatedApiKeyData { client, api_key })

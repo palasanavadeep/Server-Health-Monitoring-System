@@ -48,7 +48,10 @@ impl ClientDocument {
 
     fn from_domain(client: &Client) -> Self {
         Self {
-            id: client.id.as_deref().and_then(|id| ObjectId::parse_str(id).ok()),
+            id: client
+                .id
+                .as_deref()
+                .and_then(|id| ObjectId::parse_str(id).ok()),
             name: client.name.clone(),
             slug: client.slug.clone(),
             email: client.email.clone(),
@@ -94,17 +97,14 @@ impl ClientRepository for MongoClientRepository {
         doc.created_at = Some(bson::DateTime::now());
         doc.updated_at = Some(bson::DateTime::now());
 
-        self.collection
-            .insert_one(&doc)
-            .await
-            .map_err(|e| {
-                let err_str = format!("{}", e);
-                if err_str.contains("11000") || err_str.contains("duplicate key") {
-                    AppError::conflict("Client already exists")
-                } else {
-                    AppError::from(e)
-                }
-            })?;
+        self.collection.insert_one(&doc).await.map_err(|e| {
+            let err_str = format!("{}", e);
+            if err_str.contains("11000") || err_str.contains("duplicate key") {
+                AppError::conflict("Client already exists")
+            } else {
+                AppError::from(e)
+            }
+        })?;
 
         tracing::info!(
             mongo_id = ?doc.id,

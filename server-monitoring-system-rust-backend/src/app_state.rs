@@ -3,6 +3,7 @@ use std::sync::Arc;
 use sea_orm::DatabaseConnection;
 
 use crate::config::settings::AppConfig;
+use crate::resilience::circuit_breaker::CircuitBreaker;
 use crate::service::analytics::AnalyticsService;
 use crate::service::auth::AuthService;
 use crate::service::client::ClientService;
@@ -22,6 +23,8 @@ pub struct AppState {
     /// SeaORM connection for direct DB access when needed (e.g., health checks).
     pub db: DatabaseConnection,
     pub config: AppConfig,
+    /// Shared circuit breaker — exposed for health endpoint diagnostics.
+    pub circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl AppState {
@@ -33,6 +36,7 @@ impl AppState {
         ingest_service: IngestService,
         db: DatabaseConnection,
         config: AppConfig,
+        circuit_breaker: Arc<CircuitBreaker>,
     ) -> Self {
         Self {
             auth_service: Arc::new(auth_service),
@@ -41,6 +45,7 @@ impl AppState {
             ingest_service: Arc::new(ingest_service),
             db,
             config,
+            circuit_breaker,
         }
     }
 }

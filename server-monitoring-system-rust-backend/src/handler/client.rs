@@ -19,9 +19,8 @@ macro_rules! require_user {
         match get_user($req) {
             Some(u) => u,
             None => {
-                return HttpResponse::Unauthorized().json(ResponseFormatter::unauthorized(
-                    "Authentication required",
-                ))
+                return HttpResponse::Unauthorized()
+                    .json(ResponseFormatter::unauthorized("Authentication required"))
             }
         }
     };
@@ -44,8 +43,7 @@ pub async fn create_client(
     {
         Ok(true) => {}
         Ok(false) => {
-            return HttpResponse::Forbidden()
-                .json(ResponseFormatter::forbidden("Access denied"))
+            return HttpResponse::Forbidden().json(ResponseFormatter::forbidden("Access denied"))
         }
         Err(e) => return e.to_response(),
     }
@@ -75,7 +73,12 @@ pub async fn create_client_user(
 
     match state
         .client_service
-        .create_client_user(&client_id, body.into_inner(), &user.role, user.client_id.as_deref())
+        .create_client_user(
+            &client_id,
+            body.into_inner(),
+            &user.role,
+            user.client_id.as_deref(),
+        )
         .await
     {
         Ok(user_resp) => HttpResponse::Created().json(ResponseFormatter::created(
@@ -129,10 +132,9 @@ pub async fn get_client_api_keys(
         .get_client_api_keys(&client_id, &user.role, user.client_id.as_deref())
         .await
     {
-        Ok(keys) => HttpResponse::Ok().json(ResponseFormatter::ok(
-            keys,
-            "API key fetched successfully",
-        )),
+        Ok(keys) => {
+            HttpResponse::Ok().json(ResponseFormatter::ok(keys, "API key fetched successfully"))
+        }
         Err(e) => e.to_response(),
     }
 }
@@ -168,8 +170,9 @@ pub async fn update_api_key(
             updated,
             "API key updated successfully",
         )),
-        Ok(None) => HttpResponse::NotFound()
-            .json(ResponseFormatter::not_found("API key not found")),
+        Ok(None) => {
+            HttpResponse::NotFound().json(ResponseFormatter::not_found("API key not found"))
+        }
         Err(e) => e.to_response(),
     }
 }
@@ -225,8 +228,9 @@ pub async fn deactivate_api_key(
             updated,
             "API key deactivated successfully",
         )),
-        Ok(None) => HttpResponse::NotFound()
-            .json(ResponseFormatter::not_found("API key not found")),
+        Ok(None) => {
+            HttpResponse::NotFound().json(ResponseFormatter::not_found("API key not found"))
+        }
         Err(e) => e.to_response(),
     }
 }
@@ -255,8 +259,9 @@ pub async fn activate_api_key(
             updated,
             "API key activated successfully",
         )),
-        Ok(None) => HttpResponse::NotFound()
-            .json(ResponseFormatter::not_found("API key not found")),
+        Ok(None) => {
+            HttpResponse::NotFound().json(ResponseFormatter::not_found("API key not found"))
+        }
         Err(e) => e.to_response(),
     }
 }
@@ -286,8 +291,9 @@ pub async fn rotate_api_key(
             updated,
             "API key rotated successfully",
         )),
-        Ok(None) => HttpResponse::NotFound()
-            .json(ResponseFormatter::not_found("API key not found")),
+        Ok(None) => {
+            HttpResponse::NotFound().json(ResponseFormatter::not_found("API key not found"))
+        }
         Err(e) => e.to_response(),
     }
 }
