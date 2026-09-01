@@ -51,10 +51,10 @@ pub struct CreateApiKeyRequest {
     #[serde(default)]
     pub allowed_origins: Vec<String>,
 
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub can_ingest: bool,
 
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub can_read: bool,
 }
 

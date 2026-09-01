@@ -11,9 +11,11 @@ import {
     KeyRound,
     Braces,
     LogOut,
+    Building,
+    Users,
 } from 'lucide-react';
 
-const navItems = [
+const regularNavItems = [
     {
         title: 'Overview',
         href: '/dashboard',
@@ -27,10 +29,32 @@ const navItems = [
         description: 'API endpoint performance'
     },
     {
-        title: 'Clients & Keys',
+        title: 'API Keys',
         href: '/dashboard/clients',
         icon: KeyRound,
-        description: 'Manage clients and credentials'
+        description: 'Manage ingestion tokens'
+    },
+    {
+        title: 'Operator Users',
+        href: '/dashboard/operators',
+        icon: Users,
+        description: 'Onboard & manage operators',
+        hideForRoles: ['client_viewer']
+    },
+];
+
+const superAdminNavItems = [
+    {
+        title: 'Tenants Management',
+        href: '/dashboard/tenants',
+        icon: Building,
+        description: 'Onboard and manage tenant organizations'
+    },
+    {
+        title: 'Tenant Users',
+        href: '/dashboard/tenants/users',
+        icon: Users,
+        description: 'Provision users for tenants'
     },
 ];
 
@@ -51,6 +75,10 @@ interface SidebarProps {
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
     const pathname = usePathname();
     const { user, logout } = useAuth();
+    const isSuperAdmin = user?.role === 'super_admin';
+    const activeNavItems = isSuperAdmin 
+        ? superAdminNavItems 
+        : regularNavItems.filter(item => !item.hideForRoles || !item.hideForRoles.includes(user?.role || ''));
 
     return (
         <>
@@ -79,15 +107,17 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                             </div>
                             <div>
                                 <h2 className="text-base font-bold bg-gradient-to-r from-cyan-400 to-emerald-400 bg-clip-text text-transparent">Telemetry Core</h2>
-                                <p className="text-[9px] text-muted-foreground uppercase font-bold tracking-wider">DevOps Streaming</p>
+                                <p className="text-[9px] text-muted-foreground uppercase font-bold tracking-wider">
+                                    {isSuperAdmin ? 'Super Admin' : 'DevOps Streaming'}
+                                </p>
                             </div>
                         </div>
 
                         {/* Navigation */}
                         <nav className="space-y-1" aria-label="Main navigation">
-                            {navItems.map((item) => {
+                            {activeNavItems.map((item) => {
                                 const Icon = item.icon;
-                                const isActive = pathname === item.href;
+                                const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href));
                                 return (
                                     <Link
                                         key={item.href}

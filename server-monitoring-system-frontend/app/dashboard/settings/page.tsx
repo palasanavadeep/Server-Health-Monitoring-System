@@ -58,8 +58,7 @@ export default function SettingsPage() {
         try {
             await authApi.updateProfile({
                 username,
-                email: email.trim() ? email : undefined,
-                password: password.trim() ? password : undefined
+                email: email.trim() ? email : undefined
             });
             toast('Profile configurations saved successfully.', 'success');
             await refreshProfile(); // Refresh session state to show updated name in Sidebar
@@ -73,14 +72,15 @@ export default function SettingsPage() {
 
     // Deactivate Account
     const handleDeactivateAccount = async () => {
-        if (!user?.id) return;
+        const targetUserId = user?.id || (user as any)?._id;
+        if (!targetUserId) return;
         
         if (!confirm("Are you sure you want to suspend this credentials session? Suspending your operator access will terminate this session immediately.")) {
             return;
         }
 
         try {
-            await authApi.deactivateUser(user.id);
+            await authApi.deactivateUser(targetUserId);
             toast('Session suspended. Logging out...', 'info');
             await logout();
         } catch (err: any) {

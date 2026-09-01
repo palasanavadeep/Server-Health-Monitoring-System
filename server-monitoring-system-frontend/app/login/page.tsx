@@ -8,32 +8,64 @@ import { Activity, Lock, User, Loader2, Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
+const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+
 export default function LoginPage() {
-    const { login, isAuthenticated, loading } = useAuth();
+    const { login, isAuthenticated, user, loading } = useAuth();
     const router = useRouter();
 
-    const [username, setUsername] = useState('');
+    const [accountIdentifier, setAccountIdentifier] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
 
     useEffect(() => {
-        if (isAuthenticated) {
-            router.push('/dashboard');
+        if (isAuthenticated && user) {
+            if (user.role === 'super_admin') {
+                router.push('/dashboard/tenants');
+            } else {
+                router.push('/dashboard');
+            }
         }
-    }, [isAuthenticated, router]);
+    }, [isAuthenticated, user, router]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
+
+        const trimmedIdentifier = accountIdentifier.trim();
+        if (!trimmedIdentifier) {
+            setError('Please enter your email or username');
+            return;
+        }
+
+        const isEmail = EMAIL_REGEX.test(trimmedIdentifier);
+        
+        // Ensure email field is always formatted correctly for the backend contract
+        let emailToSend = trimmedIdentifier;
+        if (!isEmail) {
+            if (!trimmedIdentifier.includes('@')) {
+                setError('Please enter a valid email address associated with your account (e.g. operator@company.com)');
+                return;
+            } else {
+                setError('Please provide a valid email address format');
+                return;
+            }
+        }
+
         setIsSubmitting(true);
 
         try {
-            await login({ username, password });
-            router.push('/dashboard');
+            const res = await login({ email: emailToSend, password });
+            const userRole = res?.data?.role;
+            if (userRole === 'super_admin') {
+                router.push('/dashboard/tenants');
+            } else {
+                router.push('/dashboard');
+            }
         } catch (err: any) {
-            setError(err.response?.data?.message || err.message || 'Invalid username or password');
+            setError(err.response?.data?.message || err.message || 'Invalid email or password');
         } finally {
             setIsSubmitting(false);
         }
@@ -78,8 +110,8 @@ export default function LoginPage() {
                 {/* Form */}
                 <form onSubmit={handleSubmit} className="space-y-4">
                     <div className="space-y-1.5">
-                        <label htmlFor="username" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                            Username
+                        <label htmlFor="identifier" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                            Email or Username
                         </label>
                         <div className="relative">
                             <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-muted-foreground">
@@ -87,13 +119,13 @@ export default function LoginPage() {
                             </span>
                             <Input
                                 type="text"
-                                id="username"
-                                value={username}
-                                onChange={(e) => setUsername(e.target.value)}
+                                id="identifier"
+                                value={accountIdentifier}
+                                onChange={(e) => setAccountIdentifier(e.target.value)}
                                 required
                                 disabled={isSubmitting}
                                 className="pl-10"
-                                placeholder="Enter username"
+                                placeholder="operator@company.com or username"
                             />
                         </div>
                     </div>

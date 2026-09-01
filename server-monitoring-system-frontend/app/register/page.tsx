@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/auth-context';
 import { authApi } from '@/lib/api';
-import { Activity, Lock, User, Loader2, Eye, EyeOff } from 'lucide-react';
+import { Activity, Lock, User, Mail, Loader2, Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/contexts/toast-context';
@@ -16,6 +16,7 @@ export default function RegisterPage() {
     const toast = useToast();
 
     const [username, setUsername] = useState('');
+    const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [error, setError] = useState('');
@@ -40,12 +41,28 @@ export default function RegisterPage() {
             return;
         }
 
+        if (password.length < 8) {
+            setError('Password must be at least 8 characters long');
+            return;
+        }
+
         setIsSubmitting(true);
         try {
-            const res = await authApi.register({ username, password });
+            // First attempt onboard-super-admin (for initial setup), fall back to standard register
+            let res;
+            try {
+                res = await authApi.onboardSuperAdmin({ username, email, password });
+            } catch (superAdminErr: any) {
+                // If super admin exists or endpoint is not suitable, try register endpoint
+                if (superAdminErr.response?.status === 400 && superAdminErr.response?.data?.message?.includes('already exists')) {
+                    res = await authApi.register({ username, email, password });
+                } else {
+                    throw superAdminErr;
+                }
+            }
+
             if (res.success) {
-                toast('Account registered successfully! Logging in...', 'success');
-                // Redirecting to login to establish session
+                toast('Account registered successfully! Please sign in.', 'success');
                 router.push('/login');
             } else {
                 setError(res.message || 'Registration failed');
@@ -75,7 +92,7 @@ export default function RegisterPage() {
                 
                 {/* Brand Logo & Title */}
                 <div className="text-center space-y-2">
-                    <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-cyan-50/10 text-cyan-400 border border-cyan-505/20 shadow-md shadow-cyan-500/5 animate-pulse">
+                    <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-md shadow-cyan-500/5 animate-pulse">
                         <Activity size={24} />
                     </div>
                     <h2 className="text-xl font-extrabold tracking-tight text-foreground">
@@ -117,6 +134,27 @@ export default function RegisterPage() {
                     </div>
 
                     <div className="space-y-1.5">
+                        <label htmlFor="email" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                            Email Address
+                        </label>
+                        <div className="relative">
+                            <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-muted-foreground">
+                                <Mail size={16} />
+                            </span>
+                            <Input
+                                type="email"
+                                id="email"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                required
+                                disabled={isSubmitting}
+                                className="pl-10"
+                                placeholder="operator@company.com"
+                            />
+                        </div>
+                    </div>
+
+                    <div className="space-y-1.5">
                         <label htmlFor="password" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                             Password
                         </label>
@@ -132,7 +170,7 @@ export default function RegisterPage() {
                                 required
                                 disabled={isSubmitting}
                                 className="pl-10 pr-10"
-                                placeholder="Choose a password"
+                                placeholder="Choose a password (min. 8 chars)"
                             />
                             <button
                                 type="button"

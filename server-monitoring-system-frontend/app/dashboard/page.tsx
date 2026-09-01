@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from 'react';
+import { notFound } from 'next/navigation';
 import { useDashboardQuery } from '@/hooks/use-dashboard-queries';
 import { StatsGrid } from '@/components/dashboard/stats-grid';
 import { TopEndpoints } from '@/components/dashboard/top-endpoints';
@@ -11,8 +12,17 @@ import { RefreshCw, AlertCircle, Sparkles } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
 
 export default function OverviewDashboardPage() {
-    const { data, isPending, error, refetch } = useDashboardQuery();
-    const { user } = useAuth();
+    const { user, loading } = useAuth();
+
+    // Route guard: super_admin does not have access to client metrics overview
+    if (!loading && user && user.role === 'super_admin') {
+        notFound();
+    }
+
+    const { data, isPending, error, refetch } = useDashboardQuery(
+        user?.clientId ? { clientId: user.clientId } : undefined,
+        { enabled: user?.role !== 'super_admin' }
+    );
 
     const stats = data?.data?.stats ?? null;
     const topEndpoints = data?.data?.topEndpoints ?? [];

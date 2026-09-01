@@ -13,6 +13,9 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &AppConfig) {
     cfg.route("/health", web::get().to(health::health))
         .route("/", web::get().to(health::root));
 
+    // ── Ingest routes (API-key-protected, no JWT) ────────────────────────────
+    cfg.service(web::scope("/api/hit").route("", web::post().to(ingest::ingest_hit)));
+
     // ── Auth routes ─────────────────────────────────────────────────────────
     cfg.service(
         web::scope("/api/auth")
@@ -35,6 +38,15 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &AppConfig) {
                         web::patch().to(auth::deactivate_user),
                     ),
             ),
+    );
+    
+    // ── Analytics routes (JWT-protected) ────────────────────────────────────
+    cfg.service(
+        web::scope("/api/analytics")
+            .wrap(Authenticate::new(config))
+            .route("/stats", web::get().to(analytics::get_stats))
+            .route("/dashboard", web::get().to(analytics::get_dashboard))
+            .route("/apis", web::get().to(analytics::get_apis_metrics)),
     );
 
     // ── Admin / Client management routes (all require JWT) ──────────────────
@@ -81,17 +93,9 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &AppConfig) {
                 "/admin/clients/{client_id}/api/keys/{key_id}",
                 web::get().to(client::get_api_key),
             ),
+            // .route(
+            //     "/hit",
+            //     web::post().to(ingest::ingest_hit)
+            // ),
     );
-
-    // ── Analytics routes (JWT-protected) ────────────────────────────────────
-    cfg.service(
-        web::scope("/api/analytics")
-            .wrap(Authenticate::new(config))
-            .route("/stats", web::get().to(analytics::get_stats))
-            .route("/dashboard", web::get().to(analytics::get_dashboard))
-            .route("/apis", web::get().to(analytics::get_apis_metrics)),
-    );
-
-    // ── Ingest routes (API-key-protected, no JWT) ────────────────────────────
-    cfg.service(web::scope("/api/hit").route("/", web::post().to(ingest::ingest_hit)));
 }

@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useMemo } from 'react';
+import { notFound } from 'next/navigation';
+import { useAuth } from '@/contexts/auth-context';
 import { useApisMetricsQuery } from '@/hooks/use-dashboard-queries';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -38,6 +40,13 @@ interface AggregatedApi {
 }
 
 export default function ApisPage() {
+    const { user, loading } = useAuth();
+
+    // Route guard: super_admin does not have access to client API metrics
+    if (!loading && user && user.role === 'super_admin') {
+        notFound();
+    }
+
     // Pagination states
     const [page, setPage] = useState(1);
     const [limit, setLimit] = useState(10);
@@ -49,8 +58,13 @@ export default function ApisPage() {
     const [sortField, setSortField] = useState<SortField>('hits');
     const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
 
-    // Paginated metrics query
-    const { data: metricsData, isPending, error, refetch, isFetching } = useApisMetricsQuery(page, limit);
+    // Paginated metrics query (only enabled for client users who have a clientId)
+    const { data: metricsData, isPending, error, refetch, isFetching } = useApisMetricsQuery(
+        page, 
+        limit, 
+        user?.clientId,
+        { enabled: !!user?.clientId && user?.role !== 'super_admin' }
+    );
 
     const apisList = metricsData?.items ?? [];
     const pagination = metricsData?.pagination ?? { page: 1, limit: 10, totalCount: 0, totalPages: 1 };
