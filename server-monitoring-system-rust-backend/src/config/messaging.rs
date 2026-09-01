@@ -47,27 +47,24 @@ impl RabbitMqConnection {
 
         let channel = connection.create_channel().await?;
 
-        // Dead-letter queue
+        // Persistence DLQ — dead-letter target for the main server_hits queue.
         let dlq_name = format!("{}.dlq", self.config.queue);
 
         channel
             .queue_declare(
                 &dlq_name,
-                QueueDeclareOptions {
-                    durable: true,
-                    ..Default::default()
-                },
+                QueueDeclareOptions { durable: true, ..Default::default() },
                 FieldTable::default(),
             )
             .await?;
 
-        // Main queue with dead-letter routing
-        let mut args = FieldTable::default();
-        args.insert(
+        // Main queue — durable, routes failures to persistence DLQ.
+        let mut main_args = FieldTable::default();
+        main_args.insert(
             "x-dead-letter-exchange".into(),
             lapin::types::AMQPValue::LongString("".into()),
         );
-        args.insert(
+        main_args.insert(
             "x-dead-letter-routing-key".into(),
             lapin::types::AMQPValue::LongString(dlq_name.clone().into()),
         );
@@ -75,15 +72,53 @@ impl RabbitMqConnection {
         channel
             .queue_declare(
                 &self.config.queue,
-                QueueDeclareOptions {
-                    durable: true,
-                    ..Default::default()
-                },
-                args,
+                QueueDeclareOptions { durable: true, ..Default::default() },
+                main_args,
             )
             .await?;
 
-        tracing::info!("RabbitMQ connected, queue: {}", self.config.queue);
+        // ── Metrics pipeline topology (startup-critical) ───────────────────────
+        //
+        // These declarations must succeed before any worker starts consuming.
+        // If either fails, connect() returns Err and the orchestrator restarts.
+
+        // Metrics DLQ — dead-letter target for the metrics queue.
+        let metrics_dlq_name = format!("{}.metrics.dlq", self.config.queue);
+
+        channel
+            .queue_declare(
+                &metrics_dlq_name,
+                QueueDeclareOptions { durable: true, ..Default::default() },
+                FieldTable::default(),
+            )
+            .await?;
+
+        // Metrics queue — durable, routes failures to metrics DLQ.
+        let metrics_queue_name = format!("{}.metrics", self.config.queue);
+
+        let mut metrics_args = FieldTable::default();
+        metrics_args.insert(
+            "x-dead-letter-exchange".into(),
+            lapin::types::AMQPValue::LongString("".into()),
+        );
+        metrics_args.insert(
+            "x-dead-letter-routing-key".into(),
+            lapin::types::AMQPValue::LongString(metrics_dlq_name.clone().into()),
+        );
+
+        channel
+            .queue_declare(
+                &metrics_queue_name,
+                QueueDeclareOptions { durable: true, ..Default::default() },
+                metrics_args,
+            )
+            .await?;
+
+        tracing::info!(
+            queue         = %self.config.queue,
+            metrics_queue = %metrics_queue_name,
+            "RabbitMQ connected — all queues declared"
+        );
 
         self.connection = Some(connection);
         self.channel = Some(channel.clone());

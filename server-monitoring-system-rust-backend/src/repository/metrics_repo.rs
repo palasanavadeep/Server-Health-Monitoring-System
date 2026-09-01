@@ -1,8 +1,12 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, FromQueryResult, Statement};
+use sea_orm::{
+    ConnectionTrait, DatabaseConnection, DbBackend, FromQueryResult, Statement,
+    TransactionTrait,
+};
 use serde::Deserialize;
 
+use crate::domain::ingest::MetricsEvent;
 use crate::domain::metrics::{ApiMetricsEntry, EndpointStat, OverallStats, TimeSeriesEntry};
 use crate::error::app_error::AppError;
 
@@ -31,6 +35,34 @@ pub trait MetricsRepository: Send + Sync {
         max_latency: f64,
         time_bucket: DateTime<Utc>,
     ) -> Result<(), AppError>;
+
+    /// Idempotently process a metrics event in a single atomic PostgreSQL transaction.
+    ///
+    /// The transaction does:
+    ///   1. `INSERT INTO processed_metric_events (event_id) ON CONFLICT DO NOTHING`
+    ///   2. If the insert was new (`rows_affected == 1`): `UPSERT endpoint_metrics`
+    ///   3. `COMMIT`
+    ///
+    /// This guarantees **exactly-once effect** for each `event_id` within the
+    /// deduplication retention window, even under at-least-once RabbitMQ redelivery.
+    ///
+    /// # Returns
+    /// - `Ok(true)`  — event was new; metrics updated
+    /// - `Ok(false)` — duplicate `event_id`; safely skipped, no double-count
+    /// - `Err`       — transaction failed; caller should NACK for retry
+    async fn process_event_idempotently(
+        &self,
+        event: &MetricsEvent,
+    ) -> Result<bool, AppError>;
+
+    /// Delete deduplication records older than `retain_until`.
+    ///
+    /// Should be called periodically (e.g. daily) to keep the table bounded.
+    /// Retention period must exceed the maximum RabbitMQ replay window — see SQL comments.
+    async fn cleanup_processed_events(
+        &self,
+        retain_until: DateTime<Utc>,
+    ) -> Result<u64, AppError>;
 
     async fn get_overall_stats(
         &self,
@@ -128,10 +160,22 @@ struct CountRow {
     count: i64,
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Truncate a timestamp to the start of the hour (time-bucket for metrics).
+fn time_bucket(dt: DateTime<Utc>) -> DateTime<Utc> {
+    use chrono::Timelike;
+    dt.with_minute(0)
+        .and_then(|d| d.with_second(0))
+        .and_then(|d| d.with_nanosecond(0))
+        .unwrap_or(dt)
+}
+
 // ── impl MetricsRepository ────────────────────────────────────────────────────
 
 #[async_trait]
 impl MetricsRepository for SeaOrmMetricsRepository {
+
     async fn upsert_endpoint_metrics(
         &self,
         client_id: &str,
@@ -185,6 +229,123 @@ impl MetricsRepository for SeaOrmMetricsRepository {
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(())
+    }
+
+    async fn process_event_idempotently(
+        &self,
+        event: &MetricsEvent,
+    ) -> Result<bool, AppError> {
+        // Compute time-bucket and error flag before opening the transaction.
+        let time_bucket = time_bucket(event.timestamp);
+        let error_hits: i32 = if event.status_code >= 400 { 1 } else { 0 };
+
+        // All writes happen inside one atomic transaction:
+        //   Step 1 — dedup guard (ON CONFLICT DO NOTHING)
+        //   Step 2 — metrics upsert (only if step 1 inserted a new row)
+        //   Commit — both or neither
+        let txn = self
+            .db
+            .begin()
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to begin transaction: {e}")))?;
+
+        // Step 1: attempt to claim this event_id.
+        let dedup_sql = r#"
+            INSERT INTO processed_metric_events (event_id)
+            VALUES ($1)
+            ON CONFLICT (event_id) DO NOTHING
+        "#;
+        let dedup_result = txn
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                dedup_sql,
+                [event.event_id.clone().into()],
+            ))
+            .await
+            .map_err(|e| AppError::Database(format!("Dedup insert failed: {e}")))?;
+
+        if dedup_result.rows_affected() == 0 {
+            // Already processed — commit the no-op and signal duplicate to caller.
+            txn.commit()
+                .await
+                .map_err(|e| AppError::Database(format!("Transaction commit failed: {e}")))?;
+            tracing::debug!(
+                event_id = %event.event_id,
+                "Duplicate MetricsEvent — idempotent skip"
+            );
+            return Ok(false);
+        }
+
+        // Step 2: update analytics — only reached for genuinely new events.
+        let upsert_sql = r#"
+            INSERT INTO endpoint_metrics (
+                client_id, service_name, endpoint, method,
+                total_hits, error_hits, avg_latency, min_latency, max_latency, time_bucket
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (client_id, service_name, endpoint, method, time_bucket)
+            DO UPDATE SET
+                total_hits  = endpoint_metrics.total_hits  + EXCLUDED.total_hits,
+                error_hits  = endpoint_metrics.error_hits  + EXCLUDED.error_hits,
+                avg_latency = (
+                    (endpoint_metrics.avg_latency * endpoint_metrics.total_hits)
+                    + (EXCLUDED.avg_latency * EXCLUDED.total_hits)
+                ) / NULLIF(endpoint_metrics.total_hits + EXCLUDED.total_hits, 0),
+                min_latency = LEAST(endpoint_metrics.min_latency, EXCLUDED.min_latency),
+                max_latency = GREATEST(endpoint_metrics.max_latency, EXCLUDED.max_latency),
+                updated_at  = NOW()
+        "#;
+        txn.execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            upsert_sql,
+            [
+                event.client_id.clone().into(),
+                event.service_name.clone().into(),
+                event.endpoint.clone().into(),
+                event.method.clone().into(),
+                1i32.into(),
+                error_hits.into(),
+                event.latency_ms.into(),
+                event.latency_ms.into(),
+                event.latency_ms.into(),
+                time_bucket.into(),
+            ],
+        ))
+        .await
+        .map_err(|e| AppError::Database(format!("Metrics upsert failed: {e}")))?;
+
+        // Commit — dedup record and metrics update land together or not at all.
+        txn.commit()
+            .await
+            .map_err(|e| AppError::Database(format!("Transaction commit failed: {e}")))?;
+
+        tracing::debug!(
+            event_id = %event.event_id,
+            client_id = %event.client_id,
+            endpoint  = %event.endpoint,
+            "MetricsEvent processed"
+        );
+        Ok(true)
+    }
+
+    async fn cleanup_processed_events(
+        &self,
+        retain_until: DateTime<Utc>,
+    ) -> Result<u64, AppError> {
+        let sql = "DELETE FROM processed_metric_events WHERE processed_at < $1";
+        let result = self
+            .db
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                [retain_until.into()],
+            ))
+            .await
+            .map_err(|e| AppError::Database(format!("Cleanup failed: {e}")))?;
+
+        let deleted = result.rows_affected();
+        tracing::info!(deleted, "Cleaned up expired dedup records");
+        Ok(deleted)
     }
 
     async fn get_overall_stats(

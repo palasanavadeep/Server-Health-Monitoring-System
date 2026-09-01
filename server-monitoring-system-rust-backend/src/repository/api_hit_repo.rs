@@ -1,12 +1,17 @@
 use async_trait::async_trait;
 use bson::{doc, oid::ObjectId};
-use mongodb::Database;
+use mongodb::{options::IndexOptions, Database, IndexModel};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::api_hit::ApiHit;
 use crate::error::app_error::AppError;
 
-/// Internal BSON document model for MongoDB `apihits` collection.
+// ── Internal document model ────────────────────────────────────────────────────
+
+/// Internal BSON document model for the MongoDB `apihits` collection.
+///
+/// This is a private implementation detail — callers work with the `ApiHit`
+/// domain type and the `ApiHitRepository` trait only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiHitDocument {
@@ -57,18 +62,29 @@ impl ApiHitDocument {
     }
 }
 
-/// API hit repository trait — accepts typed `&ApiHit` domain entity directly.
+// ── Trait ──────────────────────────────────────────────────────────────────────
+
+/// API hit repository trait — accepts typed `&ApiHit` domain entities directly.
 #[async_trait]
 pub trait ApiHitRepository: Send + Sync {
-    /// Persist a raw API hit.
+    /// Persist a raw API hit to MongoDB.
     ///
-    /// Returns `true` if saved, `false` if the event_id was a duplicate (idempotent).
+    /// This operation is **idempotent**: if an `ApiHit` with the same `event_id`
+    /// already exists (due to RabbitMQ redelivery), the duplicate is silently
+    /// ignored and `Ok(false)` is returned. Callers must not treat `Ok(false)` as
+    /// an error — it is a normal outcome under at-least-once delivery.
+    ///
+    /// - `Ok(true)`  — event was newly inserted
+    /// - `Ok(false)` — duplicate `event_id`; safely skipped
+    /// - `Err`       — genuine infrastructure failure; caller should NACK
     async fn save(&self, hit: &ApiHit) -> Result<bool, AppError>;
 
-    /// Delete hits with a timestamp older than `before`.
+    /// Delete hits with a `timestamp` older than `before`.
     async fn delete_old_hits(&self, before: chrono::DateTime<chrono::Utc>)
         -> Result<u64, AppError>;
 }
+
+// ── Implementation ─────────────────────────────────────────────────────────────
 
 /// MongoDB implementation of `ApiHitRepository`.
 pub struct MongoApiHitRepository {
@@ -76,10 +92,38 @@ pub struct MongoApiHitRepository {
 }
 
 impl MongoApiHitRepository {
-    pub fn new(db: &Database) -> Self {
-        Self {
-            collection: db.collection::<ApiHitDocument>("apihits"),
-        }
+    /// Create the repository and ensure the `event_id` unique index exists.
+    ///
+    /// # Startup-critical
+    ///
+    /// Returns `Err` if the unique index cannot be created. Callers **must**
+    /// propagate this error and abort startup — without this index, duplicate
+    /// `event_id` inserts are accepted silently, breaking the idempotency guarantee.
+    pub async fn new(
+        db: &Database,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let collection = db.collection::<ApiHitDocument>("apihits");
+
+        // Unique index on eventId — the MongoDB idempotency safety net.
+        // Duplicate inserts are caught here and treated as success by save().
+        let index = IndexModel::builder()
+            .keys(doc! { "eventId": 1 })
+            .options(
+                IndexOptions::builder()
+                    .unique(true)
+                    .name("uq_event_id".to_string())
+                    .build(),
+            )
+            .build();
+
+        collection
+            .create_index(index)
+            .await
+            .map_err(|e| format!("Failed to create eventId unique index on 'apihits': {e}"))?;
+
+        tracing::info!("MongoDB 'apihits' unique index on eventId verified");
+
+        Ok(Self { collection })
     }
 }
 
@@ -89,16 +133,21 @@ impl ApiHitRepository for MongoApiHitRepository {
         let doc = ApiHitDocument::from_domain(hit);
         match self.collection.insert_one(&doc).await {
             Ok(_) => {
-                tracing::info!(event_id = %hit.event_id, "API hit saved to MongoDB");
+                tracing::debug!(event_id = %hit.event_id, "API hit saved to MongoDB");
                 Ok(true)
             }
             Err(e) => {
-                let err_str = format!("{}", e);
+                let err_str = format!("{e}");
                 if err_str.contains("11000") || err_str.contains("duplicate key") {
-                    tracing::warn!(event_id = %hit.event_id, "Duplicate event ID, skipping save");
+                    // Duplicate event_id = RabbitMQ redelivery of an already-persisted event.
+                    // This is expected under at-least-once delivery — not an error.
+                    tracing::debug!(
+                        event_id = %hit.event_id,
+                        "Duplicate event_id in MongoDB — idempotent skip"
+                    );
                     Ok(false)
                 } else {
-                    tracing::error!("Error saving API hit: {}", e);
+                    tracing::error!(event_id = %hit.event_id, error = %e, "MongoDB insert failed");
                     Err(AppError::from(e))
                 }
             }

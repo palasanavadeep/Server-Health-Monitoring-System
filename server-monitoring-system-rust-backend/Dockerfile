@@ -36,10 +36,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Copy full source after deps are compiled (only app code triggers rebuild)
 COPY . .
 
-# Build both application binaries
+# Build all three application binaries
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release --bin api-server --bin consumer
+    cargo build --release --bin api-server --bin consumer --bin metrics-worker
 
 RUN ls -lah /app/target/release
 
@@ -56,9 +56,10 @@ RUN apt-get update && \
         curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy both release binaries from the builder
-COPY --from=builder /app/target/release/api-server  /usr/local/bin/api-server
-COPY --from=builder /app/target/release/consumer    /usr/local/bin/consumer
+# Copy all release binaries from the builder
+COPY --from=builder /app/target/release/api-server     /usr/local/bin/api-server
+COPY --from=builder /app/target/release/consumer       /usr/local/bin/consumer
+COPY --from=builder /app/target/release/metrics-worker /usr/local/bin/metrics-worker
 
 # Copy optional init/utility scripts
 COPY scripts/ /app/scripts/

@@ -88,6 +88,16 @@ pub struct RabbitMqConfig {
     pub retry_delay: u64,
 }
 
+impl RabbitMqConfig {
+    /// Derived queue name for the internal metrics pipeline.
+    ///
+    /// Named consistently with the topology declared in `config/messaging.rs`.
+    /// Example: `"server_hits"` → `"server_hits.metrics"`.
+    pub fn metrics_queue(&self) -> String {
+        format!("{}.metrics", self.queue)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct JwtConfig {
     pub secret: String,

@@ -43,3 +43,30 @@ pub struct HitEventData {
 fn default_ip() -> String {
     "unknown".to_string()
 }
+
+/// Internal event published to the metrics queue after MongoDB persistence.
+///
+/// ## Invariants
+///
+/// - `event_id`: globally unique, immutable per logical event. Assigned once by
+///   `IngestService` using `Uuid::new_v4()`. Receiving the same `event_id` twice
+///   means RabbitMQ redelivery — not a new event. The metrics worker uses this
+///   for idempotent deduplication.
+///
+/// - `timestamp`: the wall-clock time when the original API hit occurred,
+///   **not** when the consumer processes it. Used for time-bucket aggregation.
+///   Must never be regenerated on retry — doing so would put events into the
+///   wrong time bucket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsEvent {
+    pub event_id: String,
+    pub client_id: String,
+    pub service_name: String,
+    pub endpoint: String,
+    pub method: String,
+    pub status_code: u16,
+    pub latency_ms: f64,
+    /// Time of the original API hit — determines the time-bucket for aggregation.
+    pub timestamp: DateTime<Utc>,
+}

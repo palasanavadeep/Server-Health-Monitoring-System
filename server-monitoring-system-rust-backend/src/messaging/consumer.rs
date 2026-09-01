@@ -12,40 +12,53 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::domain::ingest::HitEvent;
+use crate::messaging::metrics_publisher::MetricsPublisher;
 use crate::resilience::circuit_breaker::CircuitBreaker;
 use crate::resilience::retry::{is_retryable, RetryStrategy};
-use crate::service::processor::ProcessorService;
+use crate::service::processor::PersistenceService;
 
-/// Event consumer — processes messages from RabbitMQ with idempotency,
-/// retry, and dead-letter queue routing.
+/// Persistence consumer — reads from `server_hits`, writes to MongoDB, then
+/// publishes to the metrics queue.
 ///
-/// Deserializes incoming bytes directly into typed `HitEvent` structs,
-/// bypassing `serde_json::Value` intermediate representation on the hot path.
+/// ## Responsibilities (single worker)
+///
+/// 1. Deserialize `HitEvent` from `server_hits`
+/// 2. Call `PersistenceService::persist()` → MongoDB write (idempotent)
+/// 3. Call `MetricsPublisher::publish()` → publish MetricsEvent + await publisher confirm
+/// 4. ACK the original message — only if both steps 2 and 3 succeeded
+///
+/// ## Failure model
+///
+/// - MongoDB failure → NACK + exponential backoff retry
+/// - Metrics publish failure → NACK + exponential backoff retry
+///   (MongoDB already has the event; duplicate insert is idempotent)
+/// - ACK failure → RabbitMQ redelivers → MongoDB dedup + metrics dedup = safe
 ///
 /// ## Concurrency model
 ///
-/// - The main consume loop runs in a single `tokio::spawn` task whose
-///   `JoinHandle` is returned from `start()`.
-/// - Retry republishes are bounded by a `Semaphore` to prevent unbounded
-///   task spawning under sustained failures.
-/// - Shutdown uses a `CancellationToken` for cooperative cancellation.
-/// - The idempotency cache uses a bounded `LruCache` instead of an
-///   unbounded `HashSet`.
-pub struct EventConsumer {
-    processor_service: Arc<ProcessorService>,
+/// - Main consume loop runs in a single `tokio::spawn` task.
+/// - Retry republishes are bounded by a `Semaphore` to prevent unbounded spawning.
+/// - Shutdown uses `CancellationToken` for cooperative cancellation.
+/// - LruCache is a **performance optimization** only — populated after successful
+///   MongoDB + metrics-publish. PostgreSQL is the source of truth for idempotency.
+pub struct PersistenceConsumer {
+    persistence_service: Arc<PersistenceService>,
+    metrics_publisher: Arc<MetricsPublisher>,
     channel: Arc<Mutex<Option<Channel>>>,
     queue_name: String,
     retry_strategy: Arc<RetryStrategy>,
     circuit_breaker: Arc<CircuitBreaker>,
+    /// LruCache of recently processed message_ids.
+    /// Populated AFTER successful MongoDB persist + metrics publish.
+    /// Evicts oldest entries automatically when full.
     processed_ids: Arc<Mutex<LruCache<String, ()>>>,
     poison_messages: Arc<Mutex<HashMap<String, u32>>>,
     stats: Arc<Mutex<ConsumerStats>>,
     cancel_token: CancellationToken,
-    /// Bounds the number of concurrent retry tasks to prevent resource exhaustion.
     retry_semaphore: Arc<Semaphore>,
 }
 
-/// Runtime statistics for the consumer.
+/// Runtime statistics for the persistence consumer.
 #[derive(Default)]
 pub struct ConsumerStats {
     pub processed: u64,
@@ -54,9 +67,10 @@ pub struct ConsumerStats {
     pub dlq_routed: u64,
 }
 
-impl EventConsumer {
+impl PersistenceConsumer {
     pub fn new(
-        processor_service: Arc<ProcessorService>,
+        persistence_service: Arc<PersistenceService>,
+        metrics_publisher: Arc<MetricsPublisher>,
         channel: Channel,
         queue_name: String,
         retry_strategy: Arc<RetryStrategy>,
@@ -67,7 +81,8 @@ impl EventConsumer {
             NonZeroUsize::new(idempotency_cache_size).unwrap_or(NonZeroUsize::new(1000).unwrap());
 
         Self {
-            processor_service,
+            persistence_service,
+            metrics_publisher,
             channel: Arc::new(Mutex::new(Some(channel))),
             queue_name,
             retry_strategy,
@@ -76,16 +91,17 @@ impl EventConsumer {
             poison_messages: Arc::new(Mutex::new(HashMap::new())),
             stats: Arc::new(Mutex::new(ConsumerStats::default())),
             cancel_token: CancellationToken::new(),
-            // Allow up to 50 concurrent retry tasks
             retry_semaphore: Arc::new(Semaphore::new(50)),
         }
     }
 
-    /// Start consuming messages from the queue.
+    /// Start consuming from the queue.
     ///
-    /// Returns a `JoinHandle` that the caller should `.await` on shutdown
-    /// to ensure all in-flight work completes.
-    pub async fn start(&self) -> Result<JoinHandle<()>, Box<dyn std::error::Error + Send + Sync>> {
+    /// Returns a `JoinHandle` that should be awaited on shutdown to allow
+    /// in-flight messages to complete.
+    pub async fn start(
+        &self,
+    ) -> Result<JoinHandle<()>, Box<dyn std::error::Error + Send + Sync>> {
         let channel_guard = self.channel.lock().await;
         let channel = channel_guard.as_ref().ok_or("No channel available")?;
 
@@ -94,15 +110,17 @@ impl EventConsumer {
         let consumer = channel
             .basic_consume(
                 &self.queue_name,
-                &format!("consumer-{}", chrono::Utc::now().timestamp()),
+                &format!("persistence-consumer-{}", chrono::Utc::now().timestamp()),
                 BasicConsumeOptions::default(),
                 FieldTable::default(),
             )
             .await?;
 
-        tracing::info!(queue = %self.queue_name, "Started consuming from queue");
+        tracing::info!(queue = %self.queue_name, "Persistence consumer started");
 
-        let processor = self.processor_service.clone();
+        // Clone all shared state for the spawned task.
+        let persistence_svc = self.persistence_service.clone();
+        let publisher = self.metrics_publisher.clone();
         let cb = self.circuit_breaker.clone();
         let retry = self.retry_strategy.clone();
         let ids = self.processed_ids.clone();
@@ -120,7 +138,7 @@ impl EventConsumer {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => {
-                        tracing::info!("Consumer received cancellation signal");
+                        tracing::info!("Persistence consumer received cancellation signal");
                         break;
                     }
                     maybe_delivery = consumer.next() => {
@@ -128,7 +146,8 @@ impl EventConsumer {
                             Some(Ok(delivery)) => {
                                 handle_delivery(
                                     &delivery,
-                                    &processor,
+                                    &persistence_svc,
+                                    &publisher,
                                     &cb,
                                     &retry,
                                     &ids,
@@ -137,10 +156,11 @@ impl EventConsumer {
                                     &ch,
                                     &queue,
                                     &retry_sem,
-                                ).await;
+                                )
+                                .await;
                             }
                             Some(Err(e)) => {
-                                tracing::error!("Consumer error: {}", e);
+                                tracing::error!("Consumer stream error: {}", e);
                                 break;
                             }
                             None => {
@@ -152,17 +172,16 @@ impl EventConsumer {
                 }
             }
 
-            tracing::info!("Consumer loop ended");
+            tracing::info!("Persistence consumer loop ended");
         });
 
-        tracing::info!("Event consumer is running");
         Ok(handle)
     }
 
     /// Signal the consumer to stop processing cooperatively.
     pub fn stop(&self) {
         self.cancel_token.cancel();
-        tracing::info!("Consumer stop requested");
+        tracing::info!("Persistence consumer stop requested");
     }
 
     /// Get current consumer statistics.
@@ -172,13 +191,23 @@ impl EventConsumer {
     }
 }
 
-// ── Extracted message handler ──────────────────────────────────────────────────
+// ── Message handler ────────────────────────────────────────────────────────────
 
-/// Process a single delivered message — extracted from the monolithic closure
-/// for readability and testability.
+/// Process a single delivered message.
+///
+/// ## ACK sequence (the critical ordering)
+///
+/// 1. `persistence_service.persist()` — MongoDB write (idempotent)
+/// 2. `metrics_publisher.publish()` — publish MetricsEvent + await publisher confirm
+/// 3. `delivery.ack()` — ACK original ONLY after both above succeeded
+///
+/// Failure at step 1 or 2 → NACK with exponential backoff → redelivery.
+/// Failure at step 3 (ACK lost) → redelivery → MongoDB dedup + metrics dedup = safe.
+#[allow(clippy::too_many_arguments)]
 async fn handle_delivery(
     delivery: &lapin::message::Delivery,
-    processor: &Arc<ProcessorService>,
+    persistence_svc: &Arc<PersistenceService>,
+    publisher: &Arc<MetricsPublisher>,
     cb: &Arc<CircuitBreaker>,
     retry: &Arc<RetryStrategy>,
     ids: &Arc<Mutex<LruCache<String, ()>>>,
@@ -188,18 +217,15 @@ async fn handle_delivery(
     queue: &str,
     retry_sem: &Arc<Semaphore>,
 ) {
-    // Circuit breaker gate
+    // Circuit breaker gate — requeue immediately if downstream is unhealthy.
     if !cb.allow_request() {
-        tracing::warn!("Circuit breaker open, requeuing message");
-        if let Err(e) = delivery
+        tracing::warn!("Circuit breaker open — requeuing message");
+        let _ = delivery
             .nack(BasicNackOptions {
                 requeue: true,
                 ..Default::default()
             })
-            .await
-        {
-            tracing::error!("Failed to nack message: {}", e);
-        }
+            .await;
         return;
     }
 
@@ -209,8 +235,8 @@ async fn handle_delivery(
         Err(err) => {
             tracing::error!(
                 error = %err,
-                raw = %String::from_utf8_lossy(&delivery.data),
-                "Failed to deserialize HitEvent — discarding message"
+                raw   = %String::from_utf8_lossy(&delivery.data),
+                "Failed to deserialize HitEvent — discarding (unrecoverable)"
             );
             let _ = delivery.ack(BasicAckOptions::default()).await;
             return;
@@ -228,7 +254,7 @@ async fn handle_delivery(
 
     let event_id = hit_event.data.event_id.clone();
 
-    // Extract message ID from AMQP properties or event payload
+    // Use AMQP message_id if present, fall back to event_id.
     let message_id = delivery
         .properties
         .message_id()
@@ -236,20 +262,134 @@ async fn handle_delivery(
         .map(|s| s.to_string())
         .unwrap_or_else(|| event_id.clone());
 
-    // Idempotency check — LRU cache automatically evicts oldest entries
+    // LruCache fast path — skip DB roundtrip for recently-processed messages.
+    // The cache is populated AFTER successful persist + publish (see success arm below),
+    // so a cache hit means both operations already completed for this message_id.
     {
         let mut ids_guard = ids.lock().await;
         if ids_guard.get(&message_id).is_some() {
-            tracing::debug!(
-                message_id = %message_id,
-                "Duplicate message skipped"
-            );
+            tracing::debug!(message_id = %message_id, "LruCache hit — skipping duplicate");
             let _ = delivery.ack(BasicAckOptions::default()).await;
             return;
         }
     }
 
-    let retry_count: u32 = delivery
+    let retry_count: u32 = extract_retry_count(delivery);
+
+    // ── Step 1: persist to MongoDB ─────────────────────────────────────────────
+    let metrics_event = match persistence_svc.persist(hit_event.data).await {
+        Ok(me) => me,
+        Err(e) => {
+            cb.on_failure();
+            let err_msg = format!("{e}");
+            tracing::error!(
+                event_id    = %event_id,
+                retry_count = retry_count,
+                error       = %err_msg,
+                "MongoDB persist failed"
+            );
+            handle_failure(
+                delivery, ch, queue, retry, retry_count, poison,
+                stats, retry_sem, &message_id, &err_msg,
+            )
+            .await;
+            return;
+        }
+    };
+
+    // ── Step 2: publish MetricsEvent + await publisher confirm ─────────────────
+    if let Err(e) = publisher.publish(&metrics_event).await {
+        // MongoDB already has the event (idempotent on retry), but the metrics
+        // queue does not. Do NOT ACK — let RabbitMQ redeliver.
+        cb.on_failure();
+        let err_msg = format!("{e}");
+        tracing::error!(
+            event_id    = %event_id,
+            retry_count = retry_count,
+            error       = %err_msg,
+            "MetricsEvent publish failed — will retry without re-persisting to MongoDB"
+        );
+        handle_failure(
+            delivery, ch, queue, retry, retry_count, poison,
+            stats, retry_sem, &message_id, &err_msg,
+        )
+        .await;
+        return;
+    }
+
+    // ── Step 3: ACK original — only after both steps above succeeded ───────────
+    let _ = delivery.ack(BasicAckOptions::default()).await;
+    cb.on_success();
+
+    {
+        let mut s = stats.lock().await;
+        s.processed += 1;
+    }
+
+    // Populate LruCache AFTER successful persist + publish (not before).
+    // This prevents the cache from hiding events if the process crashes
+    // between cache-insert and the actual DB operations.
+    {
+        let mut id_set = ids.lock().await;
+        id_set.put(message_id.clone(), ());
+    }
+
+    poison.lock().await.remove(&message_id);
+
+    tracing::info!(
+        event_id = %event_id,
+        "Event persisted to MongoDB and queued for metrics"
+    );
+}
+
+// ── Failure handling ───────────────────────────────────────────────────────────
+
+/// Decide whether to retry (with backoff) or route to DLQ.
+#[allow(clippy::too_many_arguments)]
+async fn handle_failure(
+    delivery: &lapin::message::Delivery,
+    ch: &Arc<Mutex<Option<Channel>>>,
+    queue: &str,
+    retry: &Arc<RetryStrategy>,
+    retry_count: u32,
+    poison: &Arc<Mutex<HashMap<String, u32>>>,
+    stats: &Arc<Mutex<ConsumerStats>>,
+    retry_sem: &Arc<Semaphore>,
+    message_id: &str,
+    err_msg: &str,
+) {
+    // Poison message tracking.
+    {
+        let mut pm = poison.lock().await;
+        let count = pm.entry(message_id.to_string()).or_insert(0);
+        *count += 1;
+        if *count >= 10 {
+            tracing::error!(
+                message_id          = %message_id,
+                consecutive_failures = *count,
+                "Poison message pattern detected"
+            );
+        }
+    }
+
+    if !is_retryable(err_msg) || !retry.should_retry(retry_count) {
+        // Route to DLQ — ACK original to remove from main queue.
+        route_to_dlq(ch, queue, delivery, retry_count, retry, err_msg).await;
+        let _ = delivery.ack(BasicAckOptions::default()).await;
+        stats.lock().await.dlq_routed += 1;
+    } else {
+        // Schedule retry with exponential backoff (bounded by semaphore).
+        schedule_retry(retry, retry_count, ch.clone(), queue.to_string(),
+                       delivery.data.clone(), retry_sem.clone());
+        let _ = delivery.ack(BasicAckOptions::default()).await;
+        stats.lock().await.retried += 1;
+    }
+    stats.lock().await.failed += 1;
+}
+
+/// Extract the x-retry-count header from AMQP message properties.
+fn extract_retry_count(delivery: &lapin::message::Delivery) -> u32 {
+    delivery
         .properties
         .headers()
         .as_ref()
@@ -260,73 +400,7 @@ async fn handle_delivery(
             lapin::types::AMQPValue::LongLongInt(i) => Some(*i as u32),
             _ => None,
         })
-        .unwrap_or(0);
-
-    // Pass typed HitEventData directly to the processor
-    match processor.process_event(hit_event.data).await {
-        Ok(()) => {
-            let _ = delivery.ack(BasicAckOptions::default()).await;
-            cb.on_success();
-
-            {
-                let mut s = stats.lock().await;
-                s.processed += 1;
-            }
-
-            // Track processed IDs — LRU automatically evicts oldest when full
-            {
-                let mut id_set = ids.lock().await;
-                id_set.put(message_id.clone(), ());
-            }
-
-            poison.lock().await.remove(&message_id);
-        }
-        Err(e) => {
-            cb.on_failure();
-            {
-                let mut s = stats.lock().await;
-                s.failed += 1;
-            }
-            let err_msg = format!("{}", e);
-
-            // Poison message tracking
-            {
-                let mut pm = poison.lock().await;
-                let count = pm.entry(message_id.clone()).or_insert(0);
-                *count += 1;
-                if *count >= 10 {
-                    tracing::error!(
-                        message_id = %message_id,
-                        consecutive_failures = *count,
-                        "Poison message pattern detected"
-                    );
-                }
-            }
-
-            if !is_retryable(&err_msg) || !retry.should_retry(retry_count) {
-                // Route to DLQ
-                route_to_dlq(ch, queue, delivery, retry_count, retry, &err_msg).await;
-
-                let _ = delivery.ack(BasicAckOptions::default()).await;
-                let mut s = stats.lock().await;
-                s.dlq_routed += 1;
-            } else {
-                // Schedule retry with exponential backoff (bounded by semaphore)
-                schedule_retry(
-                    retry,
-                    retry_count,
-                    ch.clone(),
-                    queue.to_string(),
-                    delivery.data.clone(),
-                    retry_sem.clone(),
-                );
-
-                let _ = delivery.ack(BasicAckOptions::default()).await;
-                let mut s = stats.lock().await;
-                s.retried += 1;
-            }
-        }
-    }
+        .unwrap_or(0)
 }
 
 /// Route a message to the dead-letter queue with diagnostic headers.
@@ -338,7 +412,7 @@ async fn route_to_dlq(
     retry: &Arc<RetryStrategy>,
     err_msg: &str,
 ) {
-    let dlq_name = format!("{}.dlq", queue);
+    let dlq_name = format!("{queue}.dlq");
     let ch_guard = ch.lock().await;
     if let Some(channel) = ch_guard.as_ref() {
         let reason = if retry_count >= retry.max_retries {
@@ -365,7 +439,8 @@ async fn route_to_dlq(
             .with_delivery_mode(2)
             .with_headers(headers);
 
-        let _ = channel
+        // Publish to DLQ with publisher confirm.
+        if let Ok(confirm) = channel
             .basic_publish(
                 "",
                 &dlq_name,
@@ -373,14 +448,19 @@ async fn route_to_dlq(
                 &delivery.data,
                 props,
             )
-            .await;
+            .await
+        {
+            if let Err(e) = confirm.await {
+                tracing::error!("DLQ publish confirm failed: {}", e);
+            }
+        }
     }
 }
 
 /// Schedule a retry republish with exponential backoff.
 ///
-/// Bounded by a semaphore to prevent unbounded task spawning under
-/// sustained failure conditions.
+/// Bounded by a semaphore to prevent unbounded task spawning under sustained failures.
+/// Uses `schedule_retry` rather than bare `NACK(requeue=true)` to avoid hot loops.
 fn schedule_retry(
     retry: &Arc<RetryStrategy>,
     retry_count: u32,
@@ -393,11 +473,10 @@ fn schedule_retry(
     let new_retry = retry_count + 1;
 
     tokio::spawn(async move {
-        // Acquire semaphore permit — blocks if too many retries are in flight
         let _permit = match retry_sem.acquire().await {
             Ok(p) => p,
             Err(_) => {
-                tracing::error!("Retry semaphore closed, dropping retry");
+                tracing::error!("Retry semaphore closed — dropping retry task");
                 return;
             }
         };
@@ -420,11 +499,13 @@ fn schedule_retry(
                 .with_delivery_mode(2)
                 .with_headers(headers);
 
-            if let Err(e) = channel
+            if let Ok(confirm) = channel
                 .basic_publish("", &queue, BasicPublishOptions::default(), &data, props)
                 .await
             {
-                tracing::error!("Failed to schedule retry: {}", e);
+                if let Err(e) = confirm.await {
+                    tracing::error!("Retry publish confirm failed: {}", e);
+                }
             }
         }
     });

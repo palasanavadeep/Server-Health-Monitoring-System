@@ -1,16 +1,14 @@
 use std::sync::Arc;
 
-use server_monitoring::config::database::MongoConnection;
+use server_monitoring::config::database::create_sea_orm_db;
 use server_monitoring::config::messaging::RabbitMqConnection;
 use server_monitoring::config::settings::AppConfig;
 use server_monitoring::config::telemetry;
-use server_monitoring::messaging::consumer::PersistenceConsumer;
-use server_monitoring::messaging::metrics_publisher::MetricsPublisher;
-use server_monitoring::repository::api_hit_repo::MongoApiHitRepository;
+use server_monitoring::messaging::metrics_consumer::MetricsConsumer;
+use server_monitoring::repository::metrics_repo::SeaOrmMetricsRepository;
 use server_monitoring::resilience::circuit_breaker::CircuitBreaker;
 use server_monitoring::resilience::retry::RetryStrategy;
-use server_monitoring::service::processor::PersistenceService;
-use tokio::sync::Mutex;
+use server_monitoring::service::metrics_processor::MetricsProcessorService;
 
 #[tokio::main]
 async fn main() {
@@ -20,7 +18,7 @@ async fn main() {
 
     telemetry::init_telemetry(&config.environment);
 
-    tracing::info!("Starting Server Monitoring Persistence Consumer (Rust)");
+    tracing::info!("Starting Server Monitoring Metrics Worker (Rust)");
 
     let startup_retry = RetryStrategy::new(
         config.consumer.startup_max_retries,
@@ -31,34 +29,34 @@ async fn main() {
     let mut attempt: u32 = 0;
 
     loop {
-        tracing::info!(attempt = attempt + 1, "Starting persistence consumer");
+        tracing::info!(attempt = attempt + 1, "Starting metrics worker");
 
-        match start_consumer(&config).await {
+        match start_metrics_worker(&config).await {
             Ok((consumer, handle)) => {
-                tracing::info!("Persistence consumer started successfully");
+                tracing::info!("Metrics worker started successfully");
 
                 tokio::signal::ctrl_c()
                     .await
                     .expect("Failed to listen for ctrl+c");
 
-                tracing::info!("Shutdown signal received — stopping persistence consumer");
+                tracing::info!("Shutdown signal received — stopping metrics worker");
                 consumer.stop();
 
                 let drain_timeout =
                     tokio::time::Duration::from_secs(config.consumer.graceful_shutdown_secs);
                 if tokio::time::timeout(drain_timeout, handle).await.is_err() {
-                    tracing::warn!("Persistence consumer did not drain within timeout");
+                    tracing::warn!("Metrics worker did not drain within timeout");
                 }
                 break;
             }
             Err(e) => {
                 attempt += 1;
-                tracing::error!(attempt = attempt, error = %e, "Persistence consumer start failed");
+                tracing::error!(attempt = attempt, error = %e, "Metrics worker start failed");
 
                 if !startup_retry.should_retry(attempt) {
                     tracing::error!(
                         max_retries = config.consumer.startup_max_retries,
-                        "Max retries reached — exiting persistence consumer"
+                        "Max retries reached — exiting metrics worker"
                     );
                     std::process::exit(1);
                 }
@@ -69,33 +67,37 @@ async fn main() {
     }
 }
 
-/// Connect to MongoDB + RabbitMQ and start the persistence consumer.
+/// Connect to PostgreSQL + RabbitMQ and start the metrics consumer.
 ///
-/// This worker does NOT connect to PostgreSQL — that is the metrics-worker's
-/// responsibility. The separation of dependencies mirrors the separation of concerns.
-async fn start_consumer(
+/// This worker does NOT connect to MongoDB — that is the persistence consumer's
+/// responsibility. The narrow dependency surface makes this worker independently
+/// scalable and deployable.
+async fn start_metrics_worker(
     config: &AppConfig,
 ) -> Result<
-    (PersistenceConsumer, tokio::task::JoinHandle<()>),
+    (MetricsConsumer, tokio::task::JoinHandle<()>),
     Box<dyn std::error::Error + Send + Sync>,
 > {
     let max_retries = config.consumer.db_connect_max_retries;
     let mut retries = 0u32;
 
-    // Connect to MongoDB with retry.
-    let mongo_db = loop {
-        tracing::info!(attempt = retries + 1, "Connecting to MongoDB");
+    // Connect to PostgreSQL with retry.
+    let pg_db = loop {
+        tracing::info!(attempt = retries + 1, "Connecting to PostgreSQL");
 
-        let mut conn = MongoConnection::new(config.mongo.clone());
-        match conn.connect().await {
-            Ok(db) => break db,
+        match create_sea_orm_db(&config.postgres_connection_string()).await {
+            Ok(db) => {
+                tracing::info!("PostgreSQL connection established");
+                break db;
+            }
             Err(e) => {
                 retries += 1;
-                tracing::error!(attempt = retries, error = %e, "MongoDB connection failed");
+                tracing::error!(attempt = retries, error = %e, "PostgreSQL connection failed");
 
                 if retries >= max_retries {
                     return Err(
-                        format!("Failed to connect to MongoDB after {max_retries} attempts").into(),
+                        format!("Failed to connect to PostgreSQL after {max_retries} attempts")
+                            .into(),
                     );
                 }
 
@@ -110,17 +112,9 @@ async fn start_consumer(
     let mut rmq_conn = RabbitMqConnection::new(config.rabbitmq.clone());
     let channel = rmq_conn.connect().await?;
 
-    // Repository — startup-critical: returns Err if unique index cannot be created.
-    let api_hit_repo = Arc::new(MongoApiHitRepository::new(&mongo_db).await?);
-
-    // Service.
-    let persistence_service = Arc::new(PersistenceService::new(api_hit_repo));
-
-    // MetricsPublisher — shares the same channel for publishing.
-    let metrics_publisher = Arc::new(MetricsPublisher::new(
-        Arc::new(Mutex::new(Some(channel.clone()))),
-        config.rabbitmq.metrics_queue(),
-    ));
+    // Repository and service.
+    let metrics_repo = Arc::new(SeaOrmMetricsRepository::new(pg_db));
+    let metrics_processor = Arc::new(MetricsProcessorService::new(metrics_repo));
 
     // Resilience primitives.
     let circuit_breaker = Arc::new(CircuitBreaker::new(
@@ -135,11 +129,13 @@ async fn start_consumer(
         config.resilience.retry_jitter_factor,
     ));
 
-    let consumer = PersistenceConsumer::new(
-        persistence_service,
-        metrics_publisher,
+    // Subscribe to the metrics queue (server_hits.metrics).
+    let metrics_queue = config.rabbitmq.metrics_queue();
+
+    let consumer = MetricsConsumer::new(
+        metrics_processor,
         channel,
-        config.rabbitmq.queue.clone(),
+        metrics_queue,
         retry_strategy,
         circuit_breaker,
         config.consumer.idempotency_cache_size,

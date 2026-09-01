@@ -33,3 +33,22 @@ CREATE INDEX IF NOT EXISTS idx_em_client_time
 
 CREATE INDEX IF NOT EXISTS idx_em_service_endpoint
     ON endpoint_metrics (service_name, endpoint, method);
+
+-- ── Deduplication table ───────────────────────────────────────────────────────
+--
+-- Records every event_id processed by the metrics worker to prevent
+-- double-counting under at-least-once RabbitMQ redelivery.
+--
+-- RETENTION POLICY: Rows are retained for 30 days. This must exceed the
+-- maximum possible RabbitMQ message replay window. If old messages can be
+-- replayed after 30 days, increase the retention period accordingly.
+-- Cleanup is performed by the periodic cleanup job in MetricsProcessorService.
+CREATE TABLE IF NOT EXISTS processed_metric_events (
+    event_id     VARCHAR(128) PRIMARY KEY,
+    processed_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for efficient time-based cleanup queries
+CREATE INDEX IF NOT EXISTS idx_pme_processed_at
+    ON processed_metric_events (processed_at);
+

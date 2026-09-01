@@ -13,6 +13,10 @@ path = "src/bin/api_server.rs"
 name = "consumer"
 path = "src/bin/consumer.rs"
 
+[[bin]]
+name = "metrics-worker"
+path = "src/bin/metrics_worker.rs"
+
 [lib]
 name = "server_monitoring"
 path = "src/lib.rs"

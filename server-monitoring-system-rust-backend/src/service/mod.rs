@@ -7,4 +7,5 @@ pub mod analytics;
 pub mod auth;
 pub mod client;
 pub mod ingest;
+pub mod metrics_processor;
 pub mod processor;

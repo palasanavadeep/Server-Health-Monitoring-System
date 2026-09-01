@@ -129,10 +129,35 @@ services:
     command: ["consumer"]
     environment:
       NODE_ENV: production
-      # MongoDB
+      # MongoDB — only DB this worker needs
       MONGO_URI: mongodb://mongo:27017/server_monitoring
       MONGO_DB_NAME: server_monitoring
-      # PostgreSQL
+      # RabbitMQ
+      RABBITMQ_URL: amqp://admin:admin@rabbitmq:5672/server_monitoring
+      RABBITMQ_QUEUE: server_hits
+      # Required by AppConfig::from_env() even though this worker skips PG
+      JWT_SECRET: ${JWT_SECRET}
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - server-monitoring-network
+    depends_on:
+      mongo:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  metrics-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: server-monitoring-metrics-worker
+    command: ["metrics-worker"]
+    environment:
+      NODE_ENV: production
+      # PostgreSQL — only DB this worker needs
       PG_HOST: postgres
       PG_PORT: 5432
       PG_DATABASE: server_monitoring
@@ -141,7 +166,7 @@ services:
       # RabbitMQ
       RABBITMQ_URL: amqp://admin:admin@rabbitmq:5672/server_monitoring
       RABBITMQ_QUEUE: server_hits
-      # Security
+      # Required by AppConfig::from_env()
       JWT_SECRET: ${JWT_SECRET}
     volumes:
       - ./logs:/app/logs
