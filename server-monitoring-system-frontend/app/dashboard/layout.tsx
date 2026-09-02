@@ -20,11 +20,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
     if (loading || isAuthenticated === null) {
         return (
-            <div className="min-h-screen grid place-items-center bg-background text-foreground">
-                <div className="flex flex-col items-center gap-3">
-                    <RefreshCw className="animate-spin text-violet-500 w-8 h-8" />
-                    <p className="text-sm font-semibold tracking-wider text-muted-foreground animate-pulse">
-                        Verifying Secure Session...
+            <div className="min-h-screen grid place-items-center bg-[#0B0D10] text-zinc-300">
+                <div className="flex flex-col items-center gap-2.5">
+                    <RefreshCw className="animate-spin text-[#4CB8D6] w-5 h-5" />
+                    <p className="text-xs font-medium text-zinc-400">
+                        Loading workspace telemetry...
                     </p>
                 </div>
             </div>
@@ -32,11 +32,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
 
     if (isAuthenticated === false) {
-        return null; // Prevents flashing dashboard before router pushes to /login
+        return null;
     }
 
     return (
-        <div className="flex h-screen overflow-hidden bg-background">
+        <div className="flex h-screen overflow-hidden bg-[#0B0D10] text-[#F1F3F5]">
             {/* Sidebar Navigation */}
             <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
             
@@ -45,7 +45,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <Header sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
                 
                 {/* Scrollable Content Container */}
-                <main className="flex-1 overflow-y-auto p-6 grid-bg">
+                <main className="flex-1 overflow-y-auto p-4 sm:p-6 bg-[#0B0D10]">
                     {children}
                 </main>
             </div>

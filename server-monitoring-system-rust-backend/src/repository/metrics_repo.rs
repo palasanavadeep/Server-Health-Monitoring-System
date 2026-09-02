@@ -566,7 +566,6 @@ impl MetricsRepository for SeaOrmMetricsRepository {
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<ApiMetricsEntry>, i64), AppError> {
-        // Count distinct (service, endpoint, method) tuples
         let count_sql = r#"
             SELECT COUNT(*) AS count
             FROM (

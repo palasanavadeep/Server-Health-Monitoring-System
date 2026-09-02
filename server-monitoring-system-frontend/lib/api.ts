@@ -301,6 +301,11 @@ export const authApi = {
         const response = await api.patch(`/auth/users/${userId}/deactivate`);
         const raw = response.data?.data ?? response.data;
         return normalizeUserProfile(raw);
+    },
+    activateUser: async (userId: string): Promise<ClientProfile> => {
+        const response = await api.patch(`/auth/users/${userId}/activate`);
+        const raw = response.data?.data ?? response.data;
+        return normalizeUserProfile(raw);
     }
 };
 
@@ -396,6 +401,15 @@ export const clientApi = {
         const response = await api.post(`/admin/clients/${clientId}/users`, userData);
         const raw = response.data?.data ?? response.data;
         return normalizeUserProfile(raw);
+    },
+    getClientUsers: async (clientId?: string): Promise<ClientProfile[]> => {
+        const url = clientId ? `/admin/clients/${clientId}/users` : '/client/users';
+        const response = await api.get(url);
+        const rawList = response.data?.data ?? response.data;
+        if (Array.isArray(rawList)) {
+            return rawList.map(normalizeUserProfile);
+        }
+        return [];
     },
     updateApiKey: async (clientId: string, keyId: string, keyData: ApiKeyCreateInput): Promise<ApiKey> => {
         const payload = transformApiKeyInput(keyData);

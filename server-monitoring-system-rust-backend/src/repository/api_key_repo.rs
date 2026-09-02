@@ -213,7 +213,18 @@ impl ApiKeyRepository for MongoApiKeyRepository {
     }
 
     async fn find_by_key_id(&self, key_id: &str) -> Result<Option<ApiKey>, AppError> {
-        let doc = self.collection.find_one(doc! { "keyId": key_id }).await?;
+        let filter = if let Ok(oid) = ObjectId::parse_str(key_id) {
+            doc! {
+                "$or": [
+                    { "keyId": key_id },
+                    { "_id": oid }
+                ]
+            }
+        } else {
+            doc! { "keyId": key_id }
+        };
+
+        let doc = self.collection.find_one(filter).await?;
         Ok(doc.map(|d| d.to_domain()))
     }
 
@@ -253,9 +264,20 @@ impl ApiKeyRepository for MongoApiKeyRepository {
         }
         set_doc.insert("updatedAt", bson::DateTime::now());
 
+        let filter = if let Ok(oid) = ObjectId::parse_str(key_id) {
+            doc! {
+                "$or": [
+                    { "keyId": key_id },
+                    { "_id": oid }
+                ]
+            }
+        } else {
+            doc! { "keyId": key_id }
+        };
+
         let result = self
             .collection
-            .find_one_and_update(doc! { "keyId": key_id }, doc! { "$set": set_doc })
+            .find_one_and_update(filter, doc! { "$set": set_doc })
             .return_document(mongodb::options::ReturnDocument::After)
             .await?;
 
@@ -263,7 +285,18 @@ impl ApiKeyRepository for MongoApiKeyRepository {
     }
 
     async fn delete_by_key_id(&self, key_id: &str) -> Result<bool, AppError> {
-        let result = self.collection.delete_one(doc! { "keyId": key_id }).await?;
+        let filter = if let Ok(oid) = ObjectId::parse_str(key_id) {
+            doc! {
+                "$or": [
+                    { "keyId": key_id },
+                    { "_id": oid }
+                ]
+            }
+        } else {
+            doc! { "keyId": key_id }
+        };
+
+        let result = self.collection.delete_one(filter).await?;
         Ok(result.deleted_count > 0)
     }
 }

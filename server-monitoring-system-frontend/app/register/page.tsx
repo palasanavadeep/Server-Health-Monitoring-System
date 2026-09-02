@@ -5,9 +5,8 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/auth-context';
 import { authApi } from '@/lib/api';
-import { Activity, Lock, User, Mail, Loader2, Eye, EyeOff } from 'lucide-react';
+import { Lock, Mail, Loader2, Eye, EyeOff, Radio, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { useToast } from '@/contexts/toast-context';
 
 export default function RegisterPage() {
@@ -22,7 +21,6 @@ export default function RegisterPage() {
     const [error, setError] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     
-    // Toggle show password states
     const [showPassword, setShowPassword] = useState(false);
     const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
@@ -48,12 +46,10 @@ export default function RegisterPage() {
 
         setIsSubmitting(true);
         try {
-            // First attempt onboard-super-admin (for initial setup), fall back to standard register
             let res;
             try {
                 res = await authApi.onboardSuperAdmin({ username, email, password });
             } catch (superAdminErr: any) {
-                // If super admin exists or endpoint is not suitable, try register endpoint
                 if (superAdminErr.response?.status === 400 && superAdminErr.response?.data?.message?.includes('already exists')) {
                     res = await authApi.register({ username, email, password });
                 } else {
@@ -62,13 +58,13 @@ export default function RegisterPage() {
             }
 
             if (res.success) {
-                toast('Account registered successfully! Please sign in.', 'success');
+                toast('Account created successfully! You can now log in.', 'success');
                 router.push('/login');
             } else {
                 setError(res.message || 'Registration failed');
             }
         } catch (err: any) {
-            setError(err.response?.data?.message || err.message || 'Registration failed');
+            setError(err.response?.data?.message || err.message || 'Registration failed. Try different credentials.');
         } finally {
             setIsSubmitting(false);
         }
@@ -76,154 +72,123 @@ export default function RegisterPage() {
 
     if (loading || isAuthenticated) {
         return (
-            <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-3">
-                <Loader2 className="animate-spin text-cyan-500 w-8 h-8" />
-                <p className="text-xs font-mono text-muted-foreground animate-pulse">Establishing operator session...</p>
+            <div className="min-h-screen bg-[#0B0D10] flex flex-col items-center justify-center gap-2.5 text-zinc-400">
+                <Loader2 className="animate-spin text-[#4CB8D6] w-5 h-5" />
+                <p className="text-xs">Initializing...</p>
             </div>
         );
     }
 
     return (
-        <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden bg-background">
-            {/* Animated background grid */}
-            <div className="absolute inset-0 grid-bg opacity-30 pointer-events-none" />
-
-            <div className="w-full max-w-md glass-panel p-8 rounded-2xl border border-border-color shadow-2xl relative z-10 space-y-6">
-                
-                {/* Brand Logo & Title */}
-                <div className="text-center space-y-2">
-                    <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-md shadow-cyan-500/5 animate-pulse">
-                        <Activity size={24} />
+        <div className="min-h-screen flex items-center justify-center p-4 bg-[#0B0D10] select-none">
+            <div className="w-full max-w-sm surface-panel p-6 bg-[#111419] border border-[#242932] space-y-5">
+                {/* Brand Header */}
+                <div className="text-center space-y-1">
+                    <div className="inline-flex items-center justify-center w-9 h-9 rounded bg-[#4CB8D6]/10 text-[#4CB8D6] border border-[#4CB8D6]/20 mb-1">
+                        <Radio size={16} />
                     </div>
-                    <h2 className="text-xl font-extrabold tracking-tight text-foreground">
-                        Register Operator User
+                    <h2 className="text-base font-semibold tracking-tight text-zinc-100">
+                        Create Workspace Account
                     </h2>
-                    <p className="text-xs text-muted-foreground">
-                        Create administrative credentials to deploy monitoring scopes.
+                    <p className="text-xs text-zinc-400">
+                        Provision an operator or administrator profile.
                     </p>
                 </div>
 
                 {error && (
-                    <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs px-4 py-3 rounded-lg flex items-center gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
-                        <span className="font-medium">{error}</span>
+                    <div className="p-2.5 rounded bg-[#E45865]/10 border border-[#E45865]/20 text-[#E45865] text-xs">
+                        {error}
                     </div>
                 )}
 
-                {/* Form */}
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div className="space-y-1.5">
-                        <label htmlFor="username" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                            Username
-                        </label>
+                <form onSubmit={handleSubmit} className="space-y-3.5">
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block font-medium">Username</label>
                         <div className="relative">
-                            <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-muted-foreground">
-                                <User size={16} />
-                            </span>
-                            <Input
+                            <input
                                 type="text"
-                                id="username"
                                 value={username}
                                 onChange={(e) => setUsername(e.target.value)}
+                                placeholder="e.g. dev_operator"
                                 required
-                                disabled={isSubmitting}
-                                className="pl-10"
-                                placeholder="Choose a username"
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6]"
                             />
+                            <User size={13} className="absolute left-2.5 top-2.5 text-zinc-500" />
                         </div>
                     </div>
 
-                    <div className="space-y-1.5">
-                        <label htmlFor="email" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                            Email Address
-                        </label>
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block font-medium">Email Address</label>
                         <div className="relative">
-                            <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-muted-foreground">
-                                <Mail size={16} />
-                            </span>
-                            <Input
+                            <input
                                 type="email"
-                                id="email"
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
-                                required
-                                disabled={isSubmitting}
-                                className="pl-10"
                                 placeholder="operator@company.com"
+                                required
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6]"
                             />
+                            <Mail size={13} className="absolute left-2.5 top-2.5 text-zinc-500" />
                         </div>
                     </div>
 
-                    <div className="space-y-1.5">
-                        <label htmlFor="password" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                            Password
-                        </label>
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block font-medium">Password</label>
                         <div className="relative">
-                            <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-muted-foreground">
-                                <Lock size={16} />
-                            </span>
-                            <Input
+                            <input
                                 type={showPassword ? "text" : "password"}
-                                id="password"
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
+                                placeholder="Min. 8 characters"
                                 required
-                                disabled={isSubmitting}
-                                className="pl-10 pr-10"
-                                placeholder="Choose a password (min. 8 chars)"
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded pl-8 pr-8 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6]"
                             />
+                            <Lock size={13} className="absolute left-2.5 top-2.5 text-zinc-500" />
                             <button
                                 type="button"
                                 onClick={() => setShowPassword(!showPassword)}
-                                className="absolute inset-y-0 right-0 pr-3 flex items-center text-muted-foreground hover:text-foreground cursor-pointer"
+                                className="absolute right-2.5 top-2 text-zinc-500 hover:text-zinc-300 cursor-pointer"
                             >
-                                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                                {showPassword ? <EyeOff size={13} /> : <Eye size={13} />}
                             </button>
                         </div>
                     </div>
 
-                    <div className="space-y-1.5">
-                        <label htmlFor="confirmPassword" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                            Confirm Password
-                        </label>
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block font-medium">Confirm Password</label>
                         <div className="relative">
-                            <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-muted-foreground">
-                                <Lock size={16} />
-                            </span>
-                            <Input
+                            <input
                                 type={showConfirmPassword ? "text" : "password"}
-                                id="confirmPassword"
                                 value={confirmPassword}
                                 onChange={(e) => setConfirmPassword(e.target.value)}
+                                placeholder="Re-enter password"
                                 required
-                                disabled={isSubmitting}
-                                className="pl-10 pr-10"
-                                placeholder="Repeat your password"
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded pl-8 pr-8 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6]"
                             />
+                            <Lock size={13} className="absolute left-2.5 top-2.5 text-zinc-500" />
                             <button
                                 type="button"
                                 onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                                className="absolute inset-y-0 right-0 pr-3 flex items-center text-muted-foreground hover:text-foreground cursor-pointer"
+                                className="absolute right-2.5 top-2 text-zinc-500 hover:text-zinc-300 cursor-pointer"
                             >
-                                {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                                {showConfirmPassword ? <EyeOff size={13} /> : <Eye size={13} />}
                             </button>
                         </div>
                     </div>
 
                     <Button
                         type="submit"
-                        className="w-full mt-2 cursor-pointer"
                         isLoading={isSubmitting}
+                        className="w-full text-xs h-8 bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold cursor-pointer mt-2"
                     >
-                        Sign Up
+                        Register
                     </Button>
                 </form>
 
-                {/* Footnotes */}
-                <div className="text-center text-xs text-muted-foreground pt-2">
+                <div className="pt-3 border-t border-[#242932] text-center text-xs text-zinc-400">
                     Already have an account?{' '}
-                    <Link href="/login" className="text-cyan-400 hover:text-cyan-300 font-bold underline underline-offset-4">
-                        Sign In
+                    <Link href="/login" className="text-[#4CB8D6] hover:underline font-medium">
+                        Sign in
                     </Link>
                 </div>
             </div>

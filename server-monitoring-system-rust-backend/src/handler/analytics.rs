@@ -209,7 +209,7 @@ pub async fn get_apis_metrics(
         Some(id) => id,
         None => {
             return HttpResponse::BadRequest()
-                .json(ResponseFormatter::bad_request("clientId is required", None))
+                .json(ResponseFormatter::bad_request("Client ID is required", None))
         }
     };
 

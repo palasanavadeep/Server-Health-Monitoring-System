@@ -4,9 +4,8 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/auth-context';
-import { Activity, Lock, User, Loader2, Eye, EyeOff } from 'lucide-react';
+import { Lock, Mail, Loader2, Eye, EyeOff, Radio } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 
 const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 
@@ -42,11 +41,10 @@ export default function LoginPage() {
 
         const isEmail = EMAIL_REGEX.test(trimmedIdentifier);
         
-        // Ensure email field is always formatted correctly for the backend contract
         let emailToSend = trimmedIdentifier;
         if (!isEmail) {
             if (!trimmedIdentifier.includes('@')) {
-                setError('Please enter a valid email address associated with your account (e.g. operator@company.com)');
+                setError('Please enter a valid email address (e.g. operator@company.com)');
                 return;
             } else {
                 setError('Please provide a valid email address format');
@@ -73,105 +71,88 @@ export default function LoginPage() {
 
     if (loading || isAuthenticated) {
         return (
-            <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-3">
-                <Loader2 className="animate-spin text-cyan-500 w-8 h-8" />
-                <p className="text-xs font-mono text-muted-foreground animate-pulse">Establishing operator session...</p>
+            <div className="min-h-screen bg-[#0B0D10] flex flex-col items-center justify-center gap-2.5 text-zinc-400">
+                <Loader2 className="animate-spin text-[#4CB8D6] w-5 h-5" />
+                <p className="text-xs">Establishing operator session...</p>
             </div>
         );
     }
 
     return (
-        <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden bg-background">
-            {/* Animated background grid */}
-            <div className="absolute inset-0 grid-bg opacity-30 pointer-events-none" />
-
-            <div className="w-full max-w-md glass-panel p-8 rounded-2xl border border-border-color shadow-2xl relative z-10 space-y-6">
-                
-                {/* Brand Logo & Title */}
-                <div className="text-center space-y-2">
-                    <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-md shadow-cyan-500/5 animate-pulse">
-                        <Activity size={24} />
+        <div className="min-h-screen flex items-center justify-center p-4 bg-[#0B0D10] select-none">
+            <div className="w-full max-w-sm surface-panel p-6 bg-[#111419] border border-[#242932] space-y-5">
+                {/* Brand Header */}
+                <div className="text-center space-y-1">
+                    <div className="inline-flex items-center justify-center w-9 h-9 rounded bg-[#4CB8D6]/10 text-[#4CB8D6] border border-[#4CB8D6]/20 mb-1">
+                        <Radio size={16} />
                     </div>
-                    <h2 className="text-xl font-extrabold tracking-tight text-foreground">
-                        Sign in to Ingest Dashboard
+                    <h2 className="text-base font-semibold tracking-tight text-zinc-100">
+                        Telemetry Core
                     </h2>
-                    <p className="text-xs text-muted-foreground">
-                        Enter operator credentials to manage telemetry logs.
+                    <p className="text-xs text-zinc-400">
+                        Sign in to access your observability workspace.
                     </p>
                 </div>
 
                 {error && (
-                    <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs px-4 py-3 rounded-lg flex items-center gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
-                        <span className="font-medium">{error}</span>
+                    <div className="p-2.5 rounded bg-[#E45865]/10 border border-[#E45865]/20 text-[#E45865] text-xs">
+                        {error}
                     </div>
                 )}
 
-                {/* Form */}
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div className="space-y-1.5">
-                        <label htmlFor="identifier" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                            Email or Username
-                        </label>
+                <form onSubmit={handleSubmit} className="space-y-3.5">
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block font-medium">Email Address</label>
                         <div className="relative">
-                            <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-muted-foreground">
-                                <User size={16} />
-                            </span>
-                            <Input
+                            <input
                                 type="text"
-                                id="identifier"
                                 value={accountIdentifier}
                                 onChange={(e) => setAccountIdentifier(e.target.value)}
+                                placeholder="operator@company.com"
                                 required
-                                disabled={isSubmitting}
-                                className="pl-10"
-                                placeholder="operator@company.com or username"
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6]"
                             />
+                            <Mail size={13} className="absolute left-2.5 top-2.5 text-zinc-500" />
                         </div>
                     </div>
 
-                    <div className="space-y-1.5">
-                        <label htmlFor="password" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                            Password
-                        </label>
+                    <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                            <label className="text-xs text-zinc-300 block font-medium">Password</label>
+                        </div>
                         <div className="relative">
-                            <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-muted-foreground">
-                                <Lock size={16} />
-                            </span>
-                            <Input
+                            <input
                                 type={showPassword ? "text" : "password"}
-                                id="password"
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
+                                placeholder="••••••••"
                                 required
-                                disabled={isSubmitting}
-                                className="pl-10 pr-10"
-                                placeholder="Enter password"
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded pl-8 pr-8 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6]"
                             />
+                            <Lock size={13} className="absolute left-2.5 top-2.5 text-zinc-500" />
                             <button
                                 type="button"
                                 onClick={() => setShowPassword(!showPassword)}
-                                className="absolute inset-y-0 right-0 pr-3 flex items-center text-muted-foreground hover:text-foreground cursor-pointer"
+                                className="absolute right-2.5 top-2 text-zinc-500 hover:text-zinc-300 cursor-pointer"
                             >
-                                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                                {showPassword ? <EyeOff size={13} /> : <Eye size={13} />}
                             </button>
                         </div>
                     </div>
 
                     <Button
                         type="submit"
-                        className="w-full mt-2 cursor-pointer"
                         isLoading={isSubmitting}
+                        className="w-full text-xs h-8 bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold cursor-pointer mt-2"
                     >
                         Sign In
                     </Button>
                 </form>
 
-                {/* Footnotes */}
-                <div className="text-center text-xs text-muted-foreground pt-2">
-                    Don't have an operator user?{' '}
-                    <Link href="/register" className="text-cyan-400 hover:text-cyan-300 font-bold underline underline-offset-4">
-                        Register Account
+                <div className="pt-3 border-t border-[#242932] text-center text-xs text-zinc-400">
+                    Need an account?{' '}
+                    <Link href="/register" className="text-[#4CB8D6] hover:underline font-medium">
+                        Register workspace
                     </Link>
                 </div>
             </div>

@@ -155,12 +155,64 @@ pub async fn update_profile(
 }
 
 /// PATCH /api/auth/users/{userId}/deactivate
-pub async fn deactivate_user(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
-    let user_id = path.into_inner();
+pub async fn deactivate_user(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<String>,
+) -> HttpResponse {
+    let caller = match req.extensions().get::<AuthenticatedUser>() {
+        Some(u) => u.clone(),
+        None => {
+            return HttpResponse::Unauthorized()
+                .json(ResponseFormatter::unauthorized("Authentication required"));
+        }
+    };
+    let target_user_id = path.into_inner();
 
-    match state.auth_service.deactivate_user(&user_id).await {
+    match state
+        .auth_service
+        .deactivate_user(
+            &target_user_id,
+            &caller.user_id,
+            &caller.role,
+            caller.client_id.as_deref(),
+        )
+        .await
+    {
         Ok(user) => {
             HttpResponse::Ok().json(ResponseFormatter::ok(user, "User deactivated successfully"))
+        }
+        Err(e) => e.to_response(),
+    }
+}
+
+/// PATCH /api/auth/users/{userId}/activate
+pub async fn activate_user(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<String>,
+) -> HttpResponse {
+    let caller = match req.extensions().get::<AuthenticatedUser>() {
+        Some(u) => u.clone(),
+        None => {
+            return HttpResponse::Unauthorized()
+                .json(ResponseFormatter::unauthorized("Authentication required"));
+        }
+    };
+    let target_user_id = path.into_inner();
+
+    match state
+        .auth_service
+        .activate_user(
+            &target_user_id,
+            &caller.user_id,
+            &caller.role,
+            caller.client_id.as_deref(),
+        )
+        .await
+    {
+        Ok(user) => {
+            HttpResponse::Ok().json(ResponseFormatter::ok(user, "User activated successfully"))
         }
         Err(e) => e.to_response(),
     }

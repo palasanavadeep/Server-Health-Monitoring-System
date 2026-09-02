@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use bson::{doc, oid::ObjectId};
+use futures::TryStreamExt;
 use mongodb::Database;
 use serde::{Deserialize, Serialize};
 
@@ -84,12 +85,14 @@ pub trait UserRepository: Send + Sync {
     async fn find_by_email(&self, email: &str) -> Result<Option<User>, AppError>;
     async fn find_by_id(&self, user_id: &str) -> Result<Option<User>, AppError>;
     async fn find_by_username(&self, username: &str) -> Result<Option<User>, AppError>;
+    async fn find_by_client_id(&self, client_id: &str) -> Result<Vec<User>, AppError>;
     async fn update_profile(
         &self,
         user_id: &str,
         updates: UserProfileUpdate,
     ) -> Result<Option<User>, AppError>;
     async fn deactivate(&self, user_id: &str) -> Result<Option<User>, AppError>;
+    async fn activate(&self, user_id: &str) -> Result<Option<User>, AppError>;
     async fn update_last_login(&self, user_id: &str) -> Result<(), AppError>;
     async fn count_all(&self) -> Result<u64, AppError>;
 }
@@ -155,6 +158,24 @@ impl UserRepository for MongoUserRepository {
         Ok(doc.map(|d| d.to_domain()))
     }
 
+    async fn find_by_client_id(&self, client_id: &str) -> Result<Vec<User>, AppError> {
+        let oid = ObjectId::parse_str(client_id)
+            .map_err(|_| AppError::bad_request("Invalid client ID format"))?;
+
+        let mut cursor = self
+            .collection
+            .find(doc! { "clientId": oid })
+            .sort(doc! { "createdAt": -1 })
+            .await?;
+
+        let mut users = Vec::new();
+        while let Some(doc) = cursor.try_next().await? {
+            users.push(doc.to_domain());
+        }
+
+        Ok(users)
+    }
+
     async fn update_profile(
         &self,
         user_id: &str,
@@ -190,6 +211,22 @@ impl UserRepository for MongoUserRepository {
             .find_one_and_update(
                 doc! { "_id": oid },
                 doc! { "$set": { "isActive": false, "updatedAt": bson::DateTime::now() } },
+            )
+            .return_document(mongodb::options::ReturnDocument::After)
+            .await?;
+
+        Ok(result.map(|d| d.to_domain()))
+    }
+
+    async fn activate(&self, user_id: &str) -> Result<Option<User>, AppError> {
+        let oid = ObjectId::parse_str(user_id)
+            .map_err(|_| AppError::bad_request("Invalid user ID format"))?;
+
+        let result = self
+            .collection
+            .find_one_and_update(
+                doc! { "_id": oid },
+                doc! { "$set": { "isActive": true, "updatedAt": bson::DateTime::now() } },
             )
             .return_document(mongodb::options::ReturnDocument::After)
             .await?;

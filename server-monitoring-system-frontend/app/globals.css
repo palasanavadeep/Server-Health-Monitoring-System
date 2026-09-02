@@ -1,105 +1,105 @@
 @import "tailwindcss";
 
 :root {
-  /* Default Cyber Dark theme values */
-  --bg-app: #09090b;
-  --bg-card: rgba(20, 20, 27, 0.65);
-  --bg-card-hover: rgba(28, 28, 38, 0.85);
-  --bg-input: #121214;
-  --fg-app: #f4f4f5;
-  --fg-muted: #a1a1aa;
-  --border-color: rgba(63, 63, 70, 0.35);
-  --border-hover: rgba(82, 82, 91, 0.6);
+  /* Infrastructure Control Plane Palette */
+  --bg-app: #0B0D10;
+  --bg-sidebar: #0E1014;
+  --bg-surface: #111419;
+  --bg-elevated: #15191F;
+  --bg-hover: #181D24;
+  --bg-input: #0E1116;
   
-  --color-primary: #06b6d4;
-  --color-primary-hover: #22d3ee;
+  --fg-primary: #F1F3F5;
+  --fg-secondary: #A6ADB7;
+  --fg-muted: #737C89;
+  --fg-disabled: #545C67;
   
-  /* Status Colors */
-  --color-success: #10b981;
-  --color-error: #f43f5e;
-  --color-warning: #f59e0b;
-  --color-info: #06b6d4;
+  --border-subtle: #242932;
+  --border-hover: #323946;
+  --border-focus: #4CB8D6;
   
-  /* Layout Shadows & Glows */
-  --glow-shadow-blue: 0 0 25px rgba(6, 182, 212, 0.15);
-  --glow-shadow-purple: 0 0 25px rgba(139, 92, 246, 0.12);
-  --glow-shadow-red: 0 0 25px rgba(244, 63, 94, 0.15);
-  --glow-shadow-green: 0 0 25px rgba(16, 185, 129, 0.15);
-}
-
-.theme-light {
-  --bg-app: #f8fafc;
-  --bg-card: rgba(255, 255, 255, 0.85);
-  --bg-card-hover: rgba(255, 255, 255, 0.95);
-  --bg-input: #ffffff;
-  --fg-app: #0f172a;
-  --fg-muted: #64748b;
-  --border-color: rgba(0, 0, 0, 0.08);
-  --border-hover: rgba(0, 0, 0, 0.15);
+  /* Primary Brand / Interactive Accent */
+  --color-accent: #4CB8D6;
+  --color-accent-hover: #65C6E0;
+  --color-accent-subtle: rgba(76, 184, 214, 0.08);
+  --color-accent-border: rgba(76, 184, 214, 0.25);
   
-  --color-primary: #0284c7;
-  --color-primary-hover: #0369a1;
+  /* Semantic Status Telemetry Tokens */
+  --color-success: #48B982;
+  --color-success-subtle: rgba(72, 185, 130, 0.1);
+  --color-success-border: rgba(72, 185, 130, 0.25);
   
-  --glow-shadow-blue: 0 4px 12px rgba(6, 182, 212, 0.08);
-  --glow-shadow-purple: 0 4px 12px rgba(139, 92, 246, 0.06);
-  --glow-shadow-red: 0 4px 12px rgba(244, 63, 94, 0.08);
-  --glow-shadow-green: 0 4px 12px rgba(16, 185, 129, 0.08);
+  --color-warning: #D99A3D;
+  --color-warning-subtle: rgba(217, 154, 61, 0.1);
+  --color-warning-border: rgba(217, 154, 61, 0.25);
+  
+  --color-critical: #E45865;
+  --color-critical-subtle: rgba(228, 88, 101, 0.1);
+  --color-critical-border: rgba(228, 88, 101, 0.25);
+  
+  --color-info: #5794E8;
+  --color-info-subtle: rgba(87, 148, 232, 0.1);
+  --color-info-border: rgba(87, 148, 232, 0.25);
 }
 
 @theme {
   --color-background: var(--bg-app);
-  --color-foreground: var(--fg-app);
+  --color-foreground: var(--fg-primary);
   
-  --color-glass-card: var(--bg-card);
-  --color-glass-card-hover: var(--bg-card-hover);
+  --color-sidebar: var(--bg-sidebar);
+  --color-surface: var(--bg-surface);
+  --color-elevated: var(--bg-elevated);
+  --color-hover: var(--bg-hover);
   --color-input-bg: var(--bg-input);
-  --color-muted-foreground: var(--fg-muted);
-  --color-border-color: var(--border-color);
   
-  --animate-spin-slow: spin 3s linear infinite;
-  --animate-pulse-slow: pulse 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --color-muted-foreground: var(--fg-muted);
+  --color-secondary-foreground: var(--fg-secondary);
+  --color-disabled-foreground: var(--fg-disabled);
+  
+  --color-border-color: var(--border-subtle);
+  --color-border-hover: var(--border-hover);
+  
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  
+  --color-success: var(--color-success);
+  --color-warning: var(--color-warning);
+  --color-critical: var(--color-critical);
+  --color-info: var(--color-info);
 }
 
 body {
   background-color: var(--bg-app);
-  color: var(--fg-app);
-  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
-  transition: background-color 0.3s ease, color 0.3s ease;
+  color: var(--fg-primary);
+  font-family: var(--font-sans), Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
 }
 
-/* Glassmorphism styling helpers */
-.glass-panel {
-  background: var(--bg-card);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--border-color);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+/* Machine-oriented monospace elements */
+code, kbd, samp, pre, .font-mono {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, "Geist Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 }
 
-.glass-panel:hover {
-  background: var(--bg-card-hover);
-  border-color: var(--border-hover);
+/* Flat structured control panels */
+.surface-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
 }
 
-/* Decorative animated grid backdrop */
-.grid-bg {
-  background-size: 48px 48px;
-  background-image: 
-    linear-gradient(to right, rgba(255, 255, 255, 0.015) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+.surface-elevated {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5);
 }
 
-.theme-light .grid-bg {
-  background-image: 
-    linear-gradient(to right, rgba(0, 0, 0, 0.015) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(0, 0, 0, 0.015) 1px, transparent 1px);
-}
-
-/* Custom Scrollbars */
+/* Subtle Scrollbars */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 
 ::-webkit-scrollbar-track {
@@ -107,25 +107,10 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
+  background: #242932;
   border-radius: 4px;
 }
 
-.theme-light ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.12);
-}
-
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.15);
-}
-
-/* Custom drop-down styles for native selects option groups */
-select option {
-  background-color: #121214;
-  color: #f4f4f5;
-}
-
-.theme-light select option {
-  background-color: #ffffff;
-  color: #0f172a;
+  background: #323946;
 }

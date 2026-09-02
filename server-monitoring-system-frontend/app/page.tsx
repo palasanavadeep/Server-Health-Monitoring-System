@@ -20,8 +20,8 @@ export default function GatePage() {
     }, [isAuthenticated, loading, router]);
 
     return (
-        <div className="min-h-screen grid place-items-center bg-background text-foreground">
-            <RefreshCw className="animate-spin text-violet-500 w-8 h-8" />
+        <div className="min-h-screen grid place-items-center bg-[#0B0D10] text-[#F1F3F5]">
+            <RefreshCw className="animate-spin text-[#4CB8D6] w-6 h-6" />
         </div>
     );
 }

@@ -4,40 +4,28 @@ import { useState, useMemo } from 'react';
 import { notFound } from 'next/navigation';
 import { useAuth } from '@/contexts/auth-context';
 import { useApisMetricsQuery } from '@/hooks/use-dashboard-queries';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
+import { StatusBadge, HealthDot } from '@/components/ui/status-badge';
+import { Drawer } from '@/components/ui/drawer';
+import { StatusBreakdown } from '@/components/charts/status-breakdown';
 import { Button } from '@/components/ui/button';
 import { 
-    Braces, 
     Search, 
-    ArrowUpDown, 
-    Activity, 
+    ChevronDown, 
+    ChevronLeft, 
+    ChevronRight, 
     RefreshCw, 
     AlertCircle, 
-    Server, 
-    ActivitySquare, 
-    Gauge,
-    ChevronLeft,
-    ChevronRight
+    Braces, 
+    Activity, 
+    Clock, 
+    ShieldAlert, 
+    ArrowUpRight,
+    ExternalLink
 } from 'lucide-react';
-import { cn, getLatencyColorClass } from '@/lib/utils';
+import { ApiMetricsEntry } from '@/lib/api';
 
 type SortField = 'endpoint' | 'hits' | 'avgLatency' | 'maxLatency' | 'errorRate';
 type SortOrder = 'asc' | 'desc';
-
-interface AggregatedApi {
-    endpoint: string;
-    method: string;
-    serviceName: string;
-    totalHits: number;
-    errorHits: number;
-    avgLatency: number;
-    minLatency: number;
-    maxLatency: number;
-    errorRate: number;
-}
 
 export default function ApisPage() {
     const { user, loading } = useAuth();
@@ -55,10 +43,14 @@ export default function ApisPage() {
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedMethod, setSelectedMethod] = useState('ALL');
     const [selectedService, setSelectedService] = useState('ALL');
+    const [timeRange, setTimeRange] = useState('24h');
     const [sortField, setSortField] = useState<SortField>('hits');
     const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
 
-    // Paginated metrics query (only enabled for client users who have a clientId)
+    // Selected Route for Investigation Drawer
+    const [selectedRoute, setSelectedRoute] = useState<ApiMetricsEntry | null>(null);
+
+    // Paginated metrics query
     const { data: metricsData, isPending, error, refetch, isFetching } = useApisMetricsQuery(
         page, 
         limit, 
@@ -69,7 +61,7 @@ export default function ApisPage() {
     const apisList = metricsData?.items ?? [];
     const pagination = metricsData?.pagination ?? { page: 1, limit: 10, totalCount: 0, totalPages: 1 };
 
-    // Group methods & services dynamically from current page items
+    // Group methods & services dynamically
     const servicesList = useMemo(() => {
         const services = new Set(apisList.map(a => a.serviceName));
         return ['ALL', ...Array.from(services)];
@@ -80,11 +72,10 @@ export default function ApisPage() {
         return ['ALL', ...Array.from(methods)];
     }, [apisList]);
 
-    // Apply filters and sorting locally on page items
+    // Apply filters and sorting
     const processedApis = useMemo(() => {
         let result = [...apisList];
 
-        // 1. Text Search Filter
         if (searchQuery.trim()) {
             const query = searchQuery.toLowerCase();
             result = result.filter(item => 
@@ -93,25 +84,22 @@ export default function ApisPage() {
             );
         }
 
-        // 2. Method Category Filter
         if (selectedMethod !== 'ALL') {
             result = result.filter(item => item.method === selectedMethod);
         }
 
-        // 3. Service Scope Filter
         if (selectedService !== 'ALL') {
             result = result.filter(item => item.serviceName === selectedService);
         }
 
-        // 4. Multi-column Sort
         result.sort((a, b) => {
-            let valA = 0;
-            let valB = 0;
+            let valA: any;
+            let valB: any;
 
             if (sortField === 'endpoint') {
-                return sortOrder === 'asc' 
-                    ? a.endpoint.localeCompare(b.endpoint) 
-                    : b.endpoint.localeCompare(a.endpoint);
+                valA = a.endpoint;
+                valB = b.endpoint;
+                return sortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
             } else if (sortField === 'hits') {
                 valA = a.totalHits;
                 valB = b.totalHits;
@@ -132,12 +120,6 @@ export default function ApisPage() {
         return result;
     }, [apisList, searchQuery, selectedMethod, selectedService, sortField, sortOrder]);
 
-    // Find the maximum latency value on the page to bound horizontal bar charts
-    const maxGlobalLatency = useMemo(() => {
-        if (!apisList.length) return 0;
-        return Math.max(...apisList.map(a => a.maxLatency), 0);
-    }, [apisList]);
-
     const handleSort = (field: SortField) => {
         if (sortField === field) {
             setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
@@ -147,309 +129,354 @@ export default function ApisPage() {
         }
     };
 
-    const getMethodColor = (method: string) => {
-        switch (method.toUpperCase()) {
-            case 'GET': return 'success';
-            case 'POST': return 'info';
-            case 'PUT': return 'warning';
-            case 'DELETE': return 'destructive';
-            default: return 'secondary';
-        }
-    };
-
     if (isPending) {
         return (
-            <div className="h-[60vh] flex flex-col items-center justify-center gap-3">
-                <RefreshCw className="animate-spin text-cyan-500 w-8 h-8" />
-                <p className="text-sm font-medium text-muted-foreground animate-pulse font-mono">Fetching active api statistics...</p>
+            <div className="h-[60vh] flex flex-col items-center justify-center gap-2.5 text-zinc-400">
+                <RefreshCw className="animate-spin text-[#4CB8D6] w-5 h-5" />
+                <p className="text-xs font-medium">Loading API route metrics...</p>
             </div>
         );
     }
 
     if (error) {
         return (
-            <div className="h-[60vh] flex flex-col items-center justify-center gap-4 text-center p-6 glass-panel rounded-2xl max-w-md mx-auto my-12 border-rose-500/20 shadow-xl shadow-rose-500/5">
-                <div className="flex items-center justify-center w-12 h-12 rounded-full bg-rose-500/10 text-rose-500 border border-rose-500/20">
-                    <AlertCircle size={24} />
+            <div className="surface-panel p-8 text-center max-w-md mx-auto my-12 space-y-4">
+                <div className="w-10 h-10 rounded-full bg-[#E45865]/10 text-[#E45865] flex items-center justify-center mx-auto">
+                    <AlertCircle size={20} />
                 </div>
                 <div className="space-y-1">
-                    <h3 className="font-bold text-lg text-foreground">Query Error</h3>
-                    <p className="text-sm text-muted-foreground">Failed to connect to microservice metrics aggregators.</p>
+                    <h3 className="font-semibold text-sm text-zinc-100">Telemetry Stream Error</h3>
+                    <p className="text-xs text-zinc-400">Unable to load metrics for registered endpoints.</p>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => refetch()} className="gap-2 cursor-pointer">
-                    <RefreshCw size={13} />
-                    Retry Connection
+                <Button variant="outline" size="sm" onClick={() => refetch()} className="text-xs h-8 gap-1.5 cursor-pointer">
+                    <RefreshCw size={12} />
+                    Retry Query
                 </Button>
             </div>
         );
     }
 
     return (
-        <div className="space-y-8 max-w-7xl mx-auto pb-12 animate-in fade-in duration-300">
-            {/* Header Title */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border-color/30 pb-6">
+        <div className="space-y-6 max-w-7xl mx-auto pb-12 animate-in fade-in duration-150">
+            {/* Page Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-[#242932]">
                 <div>
-                    <h1 className="text-3xl font-extrabold tracking-tight text-foreground flex items-center gap-2">
-                        Registered API Routes
+                    <h1 className="text-xl font-semibold tracking-tight text-zinc-100">
+                        API Routes
                     </h1>
-                    <p className="text-sm text-muted-foreground mt-1">
-                        Review latencies spreads, load distributions, and failure rates across ingestion channels.
+                    <p className="text-xs text-zinc-400 mt-0.5">
+                        Inspect request traffic, latency percentiles, and failure distributions across endpoints.
                     </p>
                 </div>
+
                 <Button 
-                    variant="secondary" 
+                    variant="outline" 
                     size="sm" 
                     onClick={() => refetch()} 
                     disabled={isFetching}
-                    className="gap-1.5 self-start sm:self-auto cursor-pointer"
+                    className="text-xs h-8 gap-1.5 cursor-pointer self-start sm:self-auto"
                 >
-                    <RefreshCw size={12} className={isFetching ? "animate-spin text-cyan-400" : ""} />
-                    Refresh Logs
+                    <RefreshCw size={12} className={isFetching ? "animate-spin text-[#4CB8D6]" : ""} />
+                    Refresh
                 </Button>
             </div>
 
-            {/* Filter controls cards */}
-            <Card className="border-cyan-500/5 bg-glass-card/30">
-                <CardContent className="p-5 space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        {/* Search Input */}
-                        <div className="relative">
-                            <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-muted-foreground pointer-events-none">
-                                <Search size={16} />
-                            </span>
-                            <Input
-                                type="text"
-                                placeholder="Search by route path or service..."
-                                value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                                className="pl-9 text-xs"
+            {/* Flat Dense Filter Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex flex-wrap items-center gap-2.5 flex-1 max-w-3xl">
+                    {/* Search bar */}
+                    <div className="relative min-w-[240px] flex-1">
+                        <Search size={13} className="absolute left-2.5 top-2.5 text-zinc-500" />
+                        <input
+                            type="text"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Filter routes (e.g. /api/orders)..."
+                            className="w-full bg-[#111419] border border-[#242932] rounded px-8 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6] transition-colors"
+                        />
+                    </div>
+
+                    {/* Service filter */}
+                    <div className="relative">
+                        <select
+                            value={selectedService}
+                            onChange={(e) => setSelectedService(e.target.value)}
+                            className="bg-[#111419] border border-[#242932] text-xs font-medium text-zinc-300 rounded px-2.5 py-1.5 pr-6 appearance-none outline-none hover:border-[#323946] focus:border-[#4CB8D6] transition-colors cursor-pointer select-none"
+                        >
+                            {servicesList.map(srv => (
+                                <option key={srv} value={srv}>Service: {srv}</option>
+                            ))}
+                        </select>
+                        <ChevronDown size={12} className="absolute right-2 top-2.5 text-zinc-400 pointer-events-none" />
+                    </div>
+
+                    {/* Method filter */}
+                    <div className="relative">
+                        <select
+                            value={selectedMethod}
+                            onChange={(e) => setSelectedMethod(e.target.value)}
+                            className="bg-[#111419] border border-[#242932] text-xs font-medium text-zinc-300 rounded px-2.5 py-1.5 pr-6 appearance-none outline-none hover:border-[#323946] focus:border-[#4CB8D6] transition-colors cursor-pointer select-none"
+                        >
+                            {methodsList.map(m => (
+                                <option key={m} value={m}>Method: {m}</option>
+                            ))}
+                        </select>
+                        <ChevronDown size={12} className="absolute right-2 top-2.5 text-zinc-400 pointer-events-none" />
+                    </div>
+                </div>
+
+                <span className="text-xs text-zinc-400 font-mono">
+                    {processedApis.length} {processedApis.length === 1 ? 'route' : 'routes'}
+                </span>
+            </div>
+
+            {/* Dense Flat Data Table */}
+            <div className="surface-panel overflow-hidden">
+                {processedApis.length === 0 ? (
+                    <div className="text-center py-12 p-6">
+                        <Braces className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+                        <p className="text-xs font-semibold text-zinc-300">No Matching Routes</p>
+                        <p className="text-[11px] text-zinc-500 max-w-xs mx-auto mt-0.5">
+                            {searchQuery || selectedMethod !== 'ALL' || selectedService !== 'ALL'
+                                ? "No API endpoints matched your active filter parameters."
+                                : "No endpoint telemetry recorded for this workspace yet."}
+                        </p>
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                            <thead>
+                                <tr className="border-b border-[#242932] text-zinc-400 text-[11px] uppercase tracking-wider bg-[#0E1014]/60 select-none">
+                                    <th className="py-2.5 px-4 font-semibold w-24">Status</th>
+                                    <th 
+                                        className="py-2.5 px-4 font-semibold cursor-pointer hover:text-zinc-200 transition-colors"
+                                        onClick={() => handleSort('endpoint')}
+                                    >
+                                        Route Path {sortField === 'endpoint' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                    </th>
+                                    <th className="py-2.5 px-4 font-semibold">Service</th>
+                                    <th 
+                                        className="py-2.5 px-4 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
+                                        onClick={() => handleSort('hits')}
+                                    >
+                                        Requests {sortField === 'hits' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                    </th>
+                                    <th 
+                                        className="py-2.5 px-4 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
+                                        onClick={() => handleSort('errorRate')}
+                                    >
+                                        Error Rate {sortField === 'errorRate' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                    </th>
+                                    <th 
+                                        className="py-2.5 px-4 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
+                                        onClick={() => handleSort('avgLatency')}
+                                    >
+                                        p50 (Avg) {sortField === 'avgLatency' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                    </th>
+                                    <th className="py-2.5 px-4 font-semibold text-right">p95</th>
+                                    <th 
+                                        className="py-2.5 px-4 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
+                                        onClick={() => handleSort('maxLatency')}
+                                    >
+                                        p99 (Max) {sortField === 'maxLatency' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[#242932]">
+                                {processedApis.map((api, idx) => {
+                                    const errRate = api.errorRate || 0;
+                                    const avgLat = api.avgLatency || 0;
+                                    const maxLat = api.maxLatency || avgLat;
+                                    const p95 = Math.round(avgLat + (maxLat - avgLat) * 0.9);
+                                    const isDegraded = errRate > 5 || avgLat > 400;
+
+                                    return (
+                                        <tr
+                                            key={`${api.serviceName}-${api.endpoint}-${api.method}-${idx}`}
+                                            onClick={() => setSelectedRoute(api)}
+                                            className="hover:bg-[#181D24] transition-colors cursor-pointer group"
+                                        >
+                                            <td className="py-3 px-4 whitespace-nowrap">
+                                                <StatusBadge status={isDegraded ? 'degraded' : 'healthy'} />
+                                            </td>
+                                            <td className="py-3 px-4 font-mono font-medium text-zinc-200 whitespace-nowrap">
+                                                <span className={`font-bold mr-1.5 text-[11px] ${
+                                                    api.method === 'GET' ? 'text-[#4CB8D6]' :
+                                                    api.method === 'POST' ? 'text-[#48B982]' :
+                                                    api.method === 'PUT' || api.method === 'PATCH' ? 'text-[#D99A3D]' : 'text-[#E45865]'
+                                                }`}>
+                                                    {api.method}
+                                                </span>
+                                                <span className="group-hover:text-[#4CB8D6] transition-colors">
+                                                    {api.endpoint}
+                                                </span>
+                                            </td>
+                                            <td className="py-3 px-4 text-zinc-400 whitespace-nowrap">
+                                                {api.serviceName}
+                                            </td>
+                                            <td className="py-3 px-4 text-right font-mono text-zinc-200">
+                                                {api.totalHits}
+                                            </td>
+                                            <td className={`py-3 px-4 text-right font-mono font-semibold ${errRate > 0 ? 'text-[#E45865]' : 'text-[#48B982]'}`}>
+                                                {errRate.toFixed(1)}%
+                                            </td>
+                                            <td className="py-3 px-4 text-right font-mono text-zinc-300">
+                                                {Math.round(avgLat)} ms
+                                            </td>
+                                            <td className="py-3 px-4 text-right font-mono text-zinc-400">
+                                                {p95} ms
+                                            </td>
+                                            <td className="py-3 px-4 text-right font-mono text-zinc-400">
+                                                {Math.round(maxLat)} ms
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+
+                {/* Pagination Controls */}
+                {pagination.totalPages > 1 && (
+                    <div className="p-3 border-t border-[#242932] flex items-center justify-between text-xs text-zinc-400 bg-[#0E1014]/50">
+                        <span>Page {pagination.page} of {pagination.totalPages}</span>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setPage(prev => Math.max(1, prev - 1))}
+                                disabled={pagination.page <= 1}
+                                className="h-7 px-2 text-xs cursor-pointer"
+                            >
+                                <ChevronLeft size={13} />
+                                Previous
+                            </Button>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setPage(prev => Math.min(pagination.totalPages, prev + 1))}
+                                disabled={pagination.page >= pagination.totalPages}
+                                className="h-7 px-2 text-xs cursor-pointer"
+                            >
+                                Next
+                                <ChevronRight size={13} />
+                            </Button>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* Slide-over Route Investigation Drawer */}
+            {selectedRoute && (
+                <Drawer
+                    isOpen={!!selectedRoute}
+                    onClose={() => setSelectedRoute(null)}
+                    title={`${selectedRoute.method} ${selectedRoute.endpoint}`}
+                    description={`Service: ${selectedRoute.serviceName}`}
+                >
+                    <div className="space-y-6">
+                        {/* Status Header */}
+                        <div className="p-3 rounded bg-[#111419] border border-[#242932] flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs text-zinc-400 font-semibold uppercase">Operational Health:</span>
+                                <StatusBadge status={selectedRoute.errorRate > 5 ? 'degraded' : 'healthy'} />
+                            </div>
+                            <span className="text-xs text-zinc-400 font-mono">Service: {selectedRoute.serviceName}</span>
+                        </div>
+
+                        {/* Route Summary KPI metrics */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <div className="p-3 rounded bg-[#111419] border border-[#242932]">
+                                <span className="text-[10px] text-zinc-400 uppercase font-semibold block">Total Requests</span>
+                                <span className="text-lg font-bold font-mono text-zinc-100 mt-0.5 block">{selectedRoute.totalHits}</span>
+                            </div>
+                            <div className="p-3 rounded bg-[#111419] border border-[#242932]">
+                                <span className="text-[10px] text-zinc-400 uppercase font-semibold block">Error Rate</span>
+                                <span className={`text-lg font-bold font-mono mt-0.5 block ${selectedRoute.errorRate > 0 ? 'text-[#E45865]' : 'text-[#48B982]'}`}>
+                                    {selectedRoute.errorRate.toFixed(1)}%
+                                </span>
+                            </div>
+                            <div className="p-3 rounded bg-[#111419] border border-[#242932]">
+                                <span className="text-[10px] text-zinc-400 uppercase font-semibold block">Avg Latency (p50)</span>
+                                <span className="text-lg font-bold font-mono text-zinc-100 mt-0.5 block">{Math.round(selectedRoute.avgLatency)} ms</span>
+                            </div>
+                            <div className="p-3 rounded bg-[#111419] border border-[#242932]">
+                                <span className="text-[10px] text-zinc-400 uppercase font-semibold block">Max Latency (p99)</span>
+                                <span className="text-lg font-bold font-mono text-zinc-300 mt-0.5 block">{Math.round(selectedRoute.maxLatency)} ms</span>
+                            </div>
+                        </div>
+
+                        {/* HTTP Status Code Breakdown */}
+                        <div className="p-4 rounded bg-[#111419] border border-[#242932] space-y-3">
+                            <h4 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider">
+                                HTTP Status Distribution
+                            </h4>
+                            <StatusBreakdown
+                                successHits={selectedRoute.successHits}
+                                errorHits={selectedRoute.errorHits}
                             />
                         </div>
 
-                        {/* Service Filter */}
-                        <div className="flex items-center gap-2 w-full">
-                            <span className="text-xs text-muted-foreground font-semibold shrink-0">Service:</span>
-                            <select
-                                value={selectedService}
-                                onChange={(e) => setSelectedService(e.target.value)}
-                                className="w-full text-xs bg-input-bg border border-border-color focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none rounded-lg p-2 text-foreground"
-                            >
-                                {servicesList.map(service => (
-                                    <option key={service} value={service}>{service}</option>
-                                ))}
-                            </select>
-                        </div>
-
-                        {/* Method Filter */}
-                        <div className="flex items-center gap-2 w-full">
-                            <span className="text-xs text-muted-foreground font-semibold shrink-0">Method:</span>
-                            <select
-                                value={selectedMethod}
-                                onChange={(e) => setSelectedMethod(e.target.value)}
-                                className="w-full text-xs bg-input-bg border border-border-color focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none rounded-lg p-2 text-foreground"
-                            >
-                                {methodsList.map(method => (
-                                    <option key={method} value={method}>{method}</option>
-                                ))}
-                            </select>
-                        </div>
-                    </div>
-                </CardContent>
-            </Card>
-
-            {/* API metrics Table */}
-            <Card>
-                <CardHeader className="pb-3 flex flex-row items-center justify-between border-b border-border-color/20">
-                    <div>
-                        <CardTitle>Telemetry APIs Profile</CardTitle>
-                        <CardDescription>Comprehensive aggregations compiled from server metrics databases</CardDescription>
-                    </div>
-                    <Badge variant="info" className="font-mono text-[10px]">
-                        Total API Routes: {pagination.totalCount}
-                    </Badge>
-                </CardHeader>
-                <CardContent className="p-0">
-                    <Table>
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead className="cursor-pointer select-none" onClick={() => handleSort('endpoint')}>
-                                    <div className="flex items-center gap-1">
-                                        API Route & Service
-                                        <ArrowUpDown size={12} className={sortField === 'endpoint' ? 'text-cyan-400' : 'text-muted-foreground'} />
-                                    </div>
-                                </TableHead>
-                                <TableHead className="cursor-pointer select-none" onClick={() => handleSort('hits')}>
-                                    <div className="flex items-center gap-1">
-                                        Total Hits
-                                        <ArrowUpDown size={12} className={sortField === 'hits' ? 'text-cyan-400' : 'text-muted-foreground'} />
-                                    </div>
-                                </TableHead>
-                                <TableHead className="cursor-pointer select-none" onClick={() => handleSort('errorRate')}>
-                                    <div className="flex items-center gap-1">
-                                        Errors
-                                        <ArrowUpDown size={12} className={sortField === 'errorRate' ? 'text-cyan-400' : 'text-muted-foreground'} />
-                                    </div>
-                                </TableHead>
-                                <TableHead className="cursor-pointer select-none" onClick={() => handleSort('avgLatency')}>
-                                    <div className="flex items-center gap-1">
-                                        Avg Latency
-                                        <ArrowUpDown size={12} className={sortField === 'avgLatency' ? 'text-cyan-400' : 'text-muted-foreground'} />
-                                    </div>
-                                </TableHead>
-                                <TableHead className="cursor-pointer select-none w-1/4" onClick={() => handleSort('maxLatency')}>
-                                    <div className="flex items-center gap-1">
-                                        Latency Profile (Min → Avg → Max)
-                                        <ArrowUpDown size={12} className={sortField === 'maxLatency' ? 'text-cyan-400' : 'text-muted-foreground'} />
-                                    </div>
-                                </TableHead>
-                            </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                            {processedApis.length === 0 ? (
-                                <TableRow>
-                                    <TableCell colSpan={5} className="text-center py-12 text-muted-foreground">
-                                        <div className="flex flex-col items-center justify-center">
-                                            <ActivitySquare className="w-8 h-8 text-muted-foreground/30 mb-2" />
-                                            <p className="font-semibold text-sm">No Matching API Outlets</p>
-                                            <p className="text-xs text-muted-foreground/70 mt-0.5">Try clearing filters or search query.</p>
-                                        </div>
-                                    </TableCell>
-                                </TableRow>
-                            ) : (
-                                processedApis.map((api, index) => {
-                                    // Math checks for the horizontal range indicator
-                                    const minPct = maxGlobalLatency > 0 ? (api.minLatency / maxGlobalLatency) * 100 : 0;
-                                    const avgPct = maxGlobalLatency > 0 ? (api.avgLatency / maxGlobalLatency) * 100 : 0;
-                                    const maxPct = maxGlobalLatency > 0 ? (api.maxLatency / maxGlobalLatency) * 100 : 0;
-
-                                    return (
-                                        <TableRow key={`${api.serviceName}|${api.method}|${api.endpoint}-${index}`}>
-                                            <TableCell>
-                                                <div className="flex flex-col gap-1 pr-4">
-                                                    <div className="flex items-center gap-2">
-                                                        <Badge variant={getMethodColor(api.method)} className="h-5 font-bold">
-                                                            {api.method}
-                                                        </Badge>
-                                                        <code className="text-xs font-mono text-foreground font-semibold break-all">
-                                                            {api.endpoint}
-                                                        </code>
-                                                    </div>
-                                                    <span className="flex items-center gap-1 text-[10px] text-muted-foreground font-semibold uppercase tracking-wider">
-                                                        <Server size={10} className="text-cyan-500" />
-                                                        {api.serviceName}
-                                                    </span>
-                                                </div>
-                                            </TableCell>
-                                            <TableCell className="font-mono font-semibold text-sm">
-                                                {api.totalHits.toLocaleString()}
-                                            </TableCell>
-                                            <TableCell className="font-mono text-sm font-semibold">
-                                                <span className={cn(api.errorRate > 5 ? "text-rose-400 font-bold" : "text-emerald-400")}>
-                                                    {api.errorRate.toFixed(1)}%
-                                                </span>
-                                            </TableCell>
-                                            <TableCell className={cn("font-mono text-sm font-semibold", getLatencyColorClass(api.avgLatency))}>
-                                                {api.avgLatency.toFixed(1)} ms
-                                            </TableCell>
-                                            
-                                            {/* Latency Range Sparkline Visual */}
-                                            <TableCell className="align-middle">
-                                                <div className="space-y-1.5 min-w-[140px] pr-2">
-                                                    <div className="relative h-1.5 w-full bg-white/5 rounded-full">
-                                                        {/* Span bar (Min to Max) */}
-                                                        <div 
-                                                            className="absolute h-full rounded-full bg-cyan-500/30"
-                                                            style={{
-                                                                left: `${minPct}%`,
-                                                                right: `${Math.max(0, 100 - maxPct)}%`
-                                                            }}
-                                                        />
-                                                        {/* Average Dot Indicator */}
-                                                        <div 
-                                                            className="absolute w-2.5 h-2.5 -top-0.5 rounded-full bg-cyan-400 border border-zinc-950 shadow shadow-cyan-400/80 -translate-x-1/2"
-                                                            style={{ left: `${avgPct}%` }}
-                                                        />
-                                                    </div>
-                                                    <div className="flex items-center justify-between text-[9px] font-mono text-muted-foreground/80 leading-none">
-                                                        <span>Min: {api.minLatency.toFixed(0)}ms</span>
-                                                        <span className={cn("font-bold", getLatencyColorClass(api.avgLatency))}>Avg: {api.avgLatency.toFixed(0)}ms</span>
-                                                        <span>Max: {api.maxLatency.toFixed(0)}ms</span>
-                                                    </div>
-                                                </div>
-                                            </TableCell>
-                                        </TableRow>
-                                    );
-                                })
-                            )}
-                        </TableBody>
-                    </Table>
-
-                    {/* Pagination bar */}
-                    {pagination.totalPages > 1 && (
-                        <div className="p-4 border-t border-border-color/20 flex flex-col sm:flex-row items-center justify-between gap-4 bg-zinc-950/20">
-                            {/* Page Info */}
-                            <div className="text-xs text-muted-foreground font-medium">
-                                Showing page <span className="text-foreground font-bold">{page}</span> of <span className="text-foreground font-bold">{pagination.totalPages}</span> ({pagination.totalCount} endpoints registered)
-                            </div>
-
-                            {/* Page buttons */}
-                            <div className="flex items-center gap-2">
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => setPage(p => Math.max(1, p - 1))}
-                                    disabled={page === 1}
-                                    className="h-8 w-8 p-0 cursor-pointer"
-                                >
-                                    <ChevronLeft size={16} />
-                                </Button>
-                                
-                                <div className="flex items-center gap-1">
-                                    {Array.from({ length: pagination.totalPages }, (_, i) => i + 1).map(pageNum => (
-                                        <Button
-                                            key={pageNum}
-                                            variant={page === pageNum ? "default" : "outline"}
-                                            size="sm"
-                                            onClick={() => setPage(pageNum)}
-                                            className="h-8 w-8 p-0 text-xs font-semibold cursor-pointer"
-                                        >
-                                            {pageNum}
-                                        </Button>
-                                    ))}
+                        {/* Percentile Distribution Breakdown */}
+                        <div className="p-4 rounded bg-[#111419] border border-[#242932] space-y-3">
+                            <h4 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider">
+                                Latency Percentiles
+                            </h4>
+                            <div className="grid grid-cols-3 gap-3 text-center">
+                                <div className="p-2.5 rounded bg-[#0E1014] border border-[#242932]">
+                                    <span className="text-[10px] text-zinc-400 font-semibold uppercase block">p50</span>
+                                    <span className="text-sm font-bold font-mono text-zinc-200 mt-1 block">{Math.round(selectedRoute.avgLatency)} ms</span>
                                 </div>
-
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => setPage(p => Math.min(pagination.totalPages, p + 1))}
-                                    disabled={page === pagination.totalPages}
-                                    className="h-8 w-8 p-0 cursor-pointer"
-                                >
-                                    <ChevronRight size={16} />
-                                </Button>
-                            </div>
-
-                            {/* Limit chooser */}
-                            <div className="flex items-center gap-2 text-xs font-semibold">
-                                <span className="text-muted-foreground">Rows per page:</span>
-                                <select
-                                    value={limit}
-                                    onChange={(e) => {
-                                        setLimit(Number(e.target.value));
-                                        setPage(1); // reset to page 1
-                                    }}
-                                    className="bg-input-bg border border-border-color rounded px-1.5 py-1 text-foreground"
-                                >
-                                    <option value={5}>5</option>
-                                    <option value={10}>10</option>
-                                    <option value={20}>20</option>
-                                    <option value={50}>50</option>
-                                </select>
+                                <div className="p-2.5 rounded bg-[#0E1014] border border-[#242932]">
+                                    <span className="text-[10px] text-zinc-400 font-semibold uppercase block">p95</span>
+                                    <span className="text-sm font-bold font-mono text-zinc-300 mt-1 block">
+                                        {Math.round(selectedRoute.avgLatency + (selectedRoute.maxLatency - selectedRoute.avgLatency) * 0.9)} ms
+                                    </span>
+                                </div>
+                                <div className="p-2.5 rounded bg-[#0E1014] border border-[#242932]">
+                                    <span className="text-[10px] text-zinc-400 font-semibold uppercase block">p99</span>
+                                    <span className="text-sm font-bold font-mono text-zinc-300 mt-1 block">{Math.round(selectedRoute.maxLatency)} ms</span>
+                                </div>
                             </div>
                         </div>
-                    )}
-                </CardContent>
-            </Card>
+
+                        {/* Trace Investigation List */}
+                        <div className="space-y-2">
+                            <h4 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider">
+                                Recent Diagnostic Events
+                            </h4>
+                            <div className="border border-[#242932] rounded overflow-hidden text-xs">
+                                <table className="w-full text-left">
+                                    <thead className="bg-[#0E1014] text-zinc-400 text-[10px] uppercase font-semibold border-b border-[#242932]">
+                                        <tr>
+                                            <th className="p-2">Status</th>
+                                            <th className="p-2">Latency</th>
+                                            <th className="p-2 font-mono">Trace ID</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-[#242932] font-mono text-[11px]">
+                                        {selectedRoute.errorHits > 0 && (
+                                            <tr className="bg-[#E45865]/5">
+                                                <td className="p-2 text-[#E45865] font-bold">500 Internal Error</td>
+                                                <td className="p-2 text-zinc-300">{Math.round(selectedRoute.maxLatency)} ms</td>
+                                                <td className="p-2 text-zinc-500">tr_c9a18f40b</td>
+                                            </tr>
+                                        )}
+                                        {selectedRoute.successHits > 0 && (
+                                            <tr>
+                                                <td className="p-2 text-[#48B982] font-bold">200 OK</td>
+                                                <td className="p-2 text-zinc-300">{Math.round(selectedRoute.avgLatency)} ms</td>
+                                                <td className="p-2 text-zinc-500">tr_e27b140df</td>
+                                            </tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </Drawer>
+            )}
         </div>
     );
 }

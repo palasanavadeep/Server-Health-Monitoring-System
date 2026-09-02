@@ -2,7 +2,6 @@
 
 import { useState, useMemo } from 'react';
 import { notFound } from 'next/navigation';
-import Link from 'next/link';
 import { useAuth } from '@/contexts/auth-context';
 import { 
     useClientApiKeysQuery, 
@@ -14,11 +13,9 @@ import {
     useRotateApiKeyMutation
 } from '@/hooks/use-client-queries';
 import { ApiKey } from '@/lib/api';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/contexts/toast-context';
 import { 
     KeyRound, 
@@ -26,29 +23,37 @@ import {
     Copy, 
     Check, 
     Loader2, 
-    Calendar, 
-    ShieldCheck, 
-    ShieldAlert,
-    Building,
-    Users,
-    Activity,
-    ClipboardCopy,
-    Trash2,
-    RefreshCw,
+    Search, 
+    RefreshCw, 
+    Power, 
+    Trash2, 
+    Save, 
     Sliders,
-    Power,
+    Building,
     Eye,
-    EyeOff,
-    Info,
-    Clock,
-    X,
-    Server,
-    Shield,
-    Save,
-    Search,
-    ArrowRight
+    EyeOff
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+function formatShortApiKey(keyValue?: string, prefix?: string): string {
+    if (!keyValue && !prefix) return '—';
+    const key = keyValue || prefix || '';
+    if (key.startsWith('sm_key_')) {
+        const rest = key.slice(7);
+        const cleaned = rest.replace(/\*/g, '');
+        if (cleaned.length >= 8) {
+            return `sm_key_${cleaned.slice(0, 4)}...${cleaned.slice(-4)}`;
+        }
+        if (rest.length >= 8) {
+            return `sm_key_${rest.slice(0, 4)}...${rest.slice(-4)}`;
+        }
+        return `sm_key_${rest}`;
+    }
+    if (key.length > 16) {
+        return `${key.slice(0, 8)}...${key.slice(-4)}`;
+    }
+    return key;
+}
 
 export default function ApiKeysPage() {
     const toast = useToast();
@@ -63,11 +68,23 @@ export default function ApiKeysPage() {
     const canCreateKeys = isClientAdmin;
     const selectedClientId = user?.clientId || '';
 
-    // API Key generation fields
+    // Modals
+    const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+    const [isSecretGeneratedModalOpen, setIsSecretGeneratedModalOpen] = useState(false);
+    const [generatedKey, setGeneratedKey] = useState<string | null>(null);
+    const [copied, setCopied] = useState(false);
+
+    // Selected key for detail / edit modal
+    const [selectedKeyForDetails, setSelectedKeyForDetails] = useState<ApiKey | null>(null);
+
+    // Search query
+    const [searchQuery, setSearchQuery] = useState('');
+
+    // Creation Form inputs
     const [newKeyName, setNewKeyName] = useState('');
     const [newKeyDesc, setNewKeyDesc] = useState('');
     const [newKeyEnv, setNewKeyEnv] = useState<'production' | 'staging' | 'development' | 'testing'>('production');
-    const [newKeyExpires, setNewKeyExpires] = useState<number>(1440); // 24 hours in minutes
+    const [newKeyExpires, setNewKeyExpires] = useState<number>(1440);
     const [newKeyCanIngest, setNewKeyCanIngest] = useState(true);
     const [newKeyCanRead, setNewKeyCanRead] = useState(false);
     const [newKeyServices, setNewKeyServices] = useState('');
@@ -75,18 +92,7 @@ export default function ApiKeysPage() {
     const [newKeyOrigins, setNewKeyOrigins] = useState('*');
     const [newKeyWarnDays, setNewKeyWarnDays] = useState<number>(30);
 
-    const [isKeyModalOpen, setIsKeyModalOpen] = useState(false);
-    const [generatedKey, setGeneratedKey] = useState<string | null>(null);
-    const [copied, setCopied] = useState(false);
-
-    // Search query state
-    const [keySearchQuery, setKeySearchQuery] = useState('');
-
-    // Unified interactive key configuration modal state
-    const [selectedKeyForDetails, setSelectedKeyForDetails] = useState<ApiKey | null>(null);
-    const [showModalKeyValue, setShowModalKeyValue] = useState(false);
-
-    // Form inputs for editing currently selected key inside popup
+    // Edit Form inputs
     const [editKeyName, setEditKeyName] = useState('');
     const [editKeyDesc, setEditKeyDesc] = useState('');
     const [editKeyEnv, setEditKeyEnv] = useState<'production' | 'staging' | 'development' | 'testing'>('production');
@@ -97,20 +103,9 @@ export default function ApiKeysPage() {
     const [editKeyOrigins, setEditKeyOrigins] = useState('');
     const [editKeyWarnDays, setEditKeyWarnDays] = useState<number>(30);
 
-    // Queries and mutations
-    const { data: apiKeys = [], isLoading: loadingKeys } = useClientApiKeysQuery(selectedClientId);
+    // Queries & mutations
+    const { data: apiKeys = [], isLoading: loadingKeys, refetch } = useClientApiKeysQuery(selectedClientId);
     
-    // Filtered keys array
-    const filteredApiKeys = useMemo(() => {
-        return apiKeys.filter(key => 
-            key.name.toLowerCase().includes(keySearchQuery.toLowerCase()) ||
-            (key.description && key.description.toLowerCase().includes(keySearchQuery.toLowerCase())) ||
-            (key.environment && key.environment.toLowerCase().includes(keySearchQuery.toLowerCase())) ||
-            (key.prefix && key.prefix.toLowerCase().includes(keySearchQuery.toLowerCase()))
-        );
-    }, [apiKeys, keySearchQuery]);
-
-    // Lifecycle Mutations
     const createKeyMutation = useCreateApiKeyMutation(selectedClientId);
     const updateKeyMutation = useUpdateApiKeyMutation(selectedClientId);
     const deleteKeyMutation = useDeleteApiKeyMutation(selectedClientId);
@@ -118,8 +113,19 @@ export default function ApiKeysPage() {
     const activateKeyMutation = useActivateApiKeyMutation(selectedClientId);
     const rotateKeyMutation = useRotateApiKeyMutation(selectedClientId);
 
-    // Handle Ingestion Key Generation
-    const handleGenerateKey = async (e: React.FormEvent) => {
+    // Filtered keys
+    const filteredApiKeys = useMemo(() => {
+        if (!searchQuery.trim()) return apiKeys;
+        const q = searchQuery.toLowerCase();
+        return apiKeys.filter(k => 
+            k.name.toLowerCase().includes(q) ||
+            (k.description && k.description.toLowerCase().includes(q)) ||
+            (k.environment && k.environment.toLowerCase().includes(q)) ||
+            (k.prefix && k.prefix.toLowerCase().includes(q))
+        );
+    }, [apiKeys, searchQuery]);
+
+    const handleCreateKey = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!newKeyName.trim() || !selectedClientId) return;
 
@@ -129,8 +135,8 @@ export default function ApiKeysPage() {
 
         try {
             const res = await createKeyMutation.mutateAsync({
-                name: newKeyName,
-                description: newKeyDesc || undefined,
+                name: newKeyName.trim(),
+                description: newKeyDesc.trim() || undefined,
                 environment: newKeyEnv,
                 expiresAt: Number(newKeyExpires) || 1440,
                 permissions: {
@@ -144,7 +150,12 @@ export default function ApiKeysPage() {
                     rotationWarningDays: Number(newKeyWarnDays) || 30
                 }
             });
-            setGeneratedKey(res.keyValue || res.key || 'Failed to retrieve raw token');
+
+            setGeneratedKey(res.keyValue || res.key || 'Failed to retrieve raw key');
+            setIsCreateModalOpen(false);
+            setIsSecretGeneratedModalOpen(true);
+            
+            // Reset fields
             setNewKeyName('');
             setNewKeyDesc('');
             setNewKeyEnv('production');
@@ -155,64 +166,72 @@ export default function ApiKeysPage() {
             setNewKeyIPs('0.0.0.0/0');
             setNewKeyOrigins('*');
             setNewKeyWarnDays(30);
-            setIsKeyModalOpen(true);
-            toast('API Key generated!', 'success');
+            toast('API Key generated successfully', 'success');
         } catch (err: any) {
-            toast(err.response?.data?.message || err.message || 'Failed to generate Ingestion Key', 'error');
+            toast(err.response?.data?.message || err.message || 'Failed to generate API Key', 'error');
         }
     };
 
-    // Copy Raw Key to Clipboard
-    const handleCopyKey = (keyValueText: string) => {
-        if (!keyValueText) return;
-        navigator.clipboard.writeText(keyValueText);
+    const handleCopyKey = (keyText: string) => {
+        if (!keyText) return;
+        navigator.clipboard.writeText(keyText);
         setCopied(true);
         toast('API Key copied to clipboard', 'success');
         setTimeout(() => setCopied(false), 2000);
     };
 
-    // Toggle Status
     const handleToggleKeyStatus = async (keyId: string, isActive: boolean) => {
         try {
             if (isActive) {
                 await deactivateKeyMutation.mutateAsync(keyId);
-                toast('API Key deactivated successfully', 'info');
-                if (selectedKeyForDetails?.id === keyId || selectedKeyForDetails?.keyId === keyId) {
+                toast('API Key deactivated', 'info');
+                if (selectedKeyForDetails?.keyId === keyId || selectedKeyForDetails?.id === keyId) {
                     setSelectedKeyForDetails(prev => prev ? { ...prev, isActive: false } : null);
                 }
             } else {
                 await activateKeyMutation.mutateAsync(keyId);
-                toast('API Key activated successfully', 'success');
-                if (selectedKeyForDetails?.id === keyId || selectedKeyForDetails?.keyId === keyId) {
+                toast('API Key activated', 'success');
+                if (selectedKeyForDetails?.keyId === keyId || selectedKeyForDetails?.id === keyId) {
                     setSelectedKeyForDetails(prev => prev ? { ...prev, isActive: true } : null);
                 }
             }
         } catch (err: any) {
-            toast(err.response?.data?.message || err.message || 'Failed to change API key status', 'error');
+            toast(err.response?.data?.message || err.message || 'Failed to toggle status', 'error');
         }
     };
 
-    // Rotate Key
     const handleRotateKey = async (keyId: string) => {
-        if (!confirm("Are you sure you want to rotate this Ingestion Key? The old key will immediately stop working!")) {
+        if (!confirm("Are you sure you want to rotate this API Key? Existing requests using the previous secret will fail immediately.")) {
             return;
         }
 
         try {
             const res = await rotateKeyMutation.mutateAsync(keyId);
             setGeneratedKey(res.keyValue || res.key || 'Failed to retrieve rotated token');
-            setIsKeyModalOpen(true);
             setSelectedKeyForDetails(null);
-            toast('API Key rotated successfully!', 'success');
+            setIsSecretGeneratedModalOpen(true);
+            toast('API Key rotated successfully', 'success');
         } catch (err: any) {
-            toast(err.response?.data?.message || err.message || 'Failed to rotate API key', 'error');
+            toast(err.response?.data?.message || err.message || 'Failed to rotate key', 'error');
         }
     };
 
-    // Save Edited Key
-    const handleSaveEditKey = async (e: React.FormEvent) => {
+    const handleOpenEdit = (key: ApiKey) => {
+        setSelectedKeyForDetails(key);
+        setEditKeyName(key.name);
+        setEditKeyDesc(key.description || '');
+        setEditKeyEnv((key.environment || 'production') as any);
+        setEditKeyCanIngest(key.permissions?.canIngest !== false);
+        setEditKeyCanRead(key.permissions?.canReadAnalytics === true);
+        setEditKeyServices(key.permissions?.allowedServices?.join(', ') || '');
+        setEditKeyIPs(key.security?.allowedIPs?.join(', ') || '0.0.0.0/0');
+        setEditKeyOrigins(key.security?.allowedOrigins?.join(', ') || '*');
+        setEditKeyWarnDays(key.security?.rotationWarningDays || 30);
+    };
+
+    const handleSaveEdit = async (e: React.FormEvent) => {
         e.preventDefault();
-        const keyId = selectedKeyForDetails?.id || selectedKeyForDetails?.keyId;
+        const keyId = selectedKeyForDetails?.keyId || selectedKeyForDetails?.id;
         if (!editKeyName.trim() || !keyId) return;
 
         const ipsArray = editKeyIPs.split(',').map(s => s.trim()).filter(Boolean);
@@ -222,8 +241,8 @@ export default function ApiKeysPage() {
         try {
             await updateKeyMutation.mutateAsync({
                 keyId,
-                name: editKeyName,
-                description: editKeyDesc || undefined,
+                name: editKeyName.trim(),
+                description: editKeyDesc.trim() || undefined,
                 environment: editKeyEnv,
                 permissions: {
                     canIngest: editKeyCanIngest,
@@ -237,13 +256,12 @@ export default function ApiKeysPage() {
                 }
             });
             setSelectedKeyForDetails(null);
-            toast('API Key parameters updated successfully', 'success');
+            toast('API Key configuration updated', 'success');
         } catch (err: any) {
-            toast(err.response?.data?.message || err.message || 'Failed to update API key', 'error');
+            toast(err.response?.data?.message || err.message || 'Failed to update key', 'error');
         }
     };
 
-    // Delete Key
     const handleDeleteKey = async (keyId: string) => {
         if (!confirm("Are you sure you want to delete this API Key permanently?")) {
             return;
@@ -254,24 +272,8 @@ export default function ApiKeysPage() {
             setSelectedKeyForDetails(null);
             toast('API Key deleted permanently', 'info');
         } catch (err: any) {
-            toast(err.response?.data?.message || err.message || 'Failed to delete API key', 'error');
+            toast(err.response?.data?.message || err.message || 'Failed to delete key', 'error');
         }
-    };
-
-    // Open Unified Detail Modal
-    const handleOpenDetails = (key: ApiKey) => {
-        setSelectedKeyForDetails(key);
-        setShowModalKeyValue(false);
-        
-        setEditKeyName(key.name);
-        setEditKeyDesc(key.description || '');
-        setEditKeyEnv((key.environment || 'production') as any);
-        setEditKeyCanIngest(key.permissions?.canIngest !== false);
-        setEditKeyCanRead(key.permissions?.canReadAnalytics === true);
-        setEditKeyServices(key.permissions?.allowedServices?.join(', ') || '');
-        setEditKeyIPs(key.security?.allowedIPs?.join(', ') || '0.0.0.0/0');
-        setEditKeyOrigins(key.security?.allowedOrigins?.join(', ') || '*');
-        setEditKeyWarnDays(key.security?.rotationWarningDays || 30);
     };
 
     if (loading || (user && user.role === 'super_admin')) {
@@ -279,535 +281,505 @@ export default function ApiKeysPage() {
     }
 
     return (
-        <div className="space-y-8 max-w-7xl mx-auto pb-12 animate-in fade-in duration-300">
-            {/* Page Header */}
-            <div className="border-b border-border-color/30 pb-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div className="space-y-6 max-w-7xl mx-auto pb-12 animate-in fade-in duration-150">
+            {/* Page Header with Compact Workspace Context */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#242932]">
                 <div>
-                    <h1 className="text-3xl font-extrabold tracking-tight text-foreground flex items-center gap-2">
-                        <KeyRound className="text-cyan-400 w-7 h-7" />
-                        API Keys & Ingestion Tokens
+                    <h1 className="text-xl font-semibold tracking-tight text-zinc-100">
+                        API Keys
                     </h1>
-                    <p className="text-sm text-muted-foreground mt-1">
-                        Manage ingestion tokens, configure CIDR & origin scopes, rotate credentials, and track token security.
-                    </p>
+                    <div className="flex items-center gap-2 mt-0.5 text-xs text-zinc-400">
+                        <span>Manage telemetry ingestion credentials and network scopes.</span>
+                        <span className="text-zinc-600">•</span>
+                        <span className="font-mono text-zinc-300">
+                            Workspace: {selectedClientId.substring(0, 10)}...
+                        </span>
+                    </div>
                 </div>
-                {isClientAdmin && (
-                    <Link href="/dashboard/operators">
-                        <Button variant="secondary" size="sm" className="text-xs h-8 gap-1.5 cursor-pointer">
-                            <Users size={13} />
-                            Manage Operator Users
-                            <ArrowRight size={12} />
-                        </Button>
-                    </Link>
+
+                {canCreateKeys && (
+                    <Button
+                        size="sm"
+                        onClick={() => setIsCreateModalOpen(true)}
+                        className="text-xs h-8 gap-1.5 cursor-pointer bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold self-start sm:self-auto"
+                    >
+                        <Plus size={14} />
+                        Create API Key
+                    </Button>
                 )}
             </div>
 
-            {/* Top Workspace Info Banner */}
-            <div className="glass-panel p-5 rounded-2xl border border-cyan-500/10 bg-glass-card/65 shadow-lg shadow-cyan-500/5">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs font-semibold">
-                    <div className="flex flex-wrap items-center gap-4 md:gap-8">
-                        <div className="flex items-center gap-2">
-                            <Building className="text-cyan-400 w-5 h-5 shrink-0" />
-                            <div>
-                                <span className="text-[9px] uppercase tracking-wider text-muted-foreground block leading-none">Tenant Workspace ID</span>
-                                <span className="font-mono text-foreground font-semibold text-xs mt-0.5 block">{user?.clientId || 'N/A'}</span>
+            {/* Flat Toolbar */}
+            <div className="flex items-center justify-between gap-4 text-xs">
+                <div className="relative max-w-sm w-full">
+                    <Search size={13} className="absolute left-2.5 top-2.5 text-zinc-500" />
+                    <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search API keys by name or environment..."
+                        className="w-full bg-[#111419] border border-[#242932] rounded px-8 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6] transition-colors"
+                    />
+                </div>
+
+                <span className="text-xs text-zinc-500 font-mono">
+                    {filteredApiKeys.length} {filteredApiKeys.length === 1 ? 'key' : 'keys'}
+                </span>
+            </div>
+
+            {/* Dense Flat Data Table */}
+            <div className="surface-panel overflow-hidden">
+                {loadingKeys ? (
+                    <div className="flex items-center justify-center py-12">
+                        <Loader2 className="animate-spin text-[#4CB8D6] w-5 h-5" />
+                    </div>
+                ) : filteredApiKeys.length === 0 ? (
+                    <div className="text-center py-12 p-6">
+                        <KeyRound className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+                        <p className="text-xs font-semibold text-zinc-300">No API Keys Configured</p>
+                        <p className="text-[11px] text-zinc-500 max-w-xs mx-auto mt-0.5">
+                            {searchQuery ? "No keys matched your search term." : "Create an API Key to enable microservice telemetry ingestion."}
+                        </p>
+                        {canCreateKeys && !searchQuery && (
+                            <Button 
+                                size="sm" 
+                                onClick={() => setIsCreateModalOpen(true)}
+                                className="mt-3 text-xs h-7 gap-1 cursor-pointer bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold"
+                            >
+                                <Plus size={12} />
+                                Create API Key
+                            </Button>
+                        )}
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                            <thead>
+                                <tr className="border-b border-[#242932] text-zinc-400 text-[11px] uppercase tracking-wider bg-[#0E1014]/60 select-none">
+                                    <th className="py-2.5 px-4 font-semibold w-24">Status</th>
+                                    <th className="py-2.5 px-4 font-semibold">Key Name</th>
+                                    <th className="py-2.5 px-4 font-semibold">Environment</th>
+                                    <th className="py-2.5 px-4 font-semibold">API Key / Token</th>
+                                    <th className="py-2.5 px-4 font-semibold">Created</th>
+                                    <th className="py-2.5 px-4 font-semibold text-right w-28">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[#242932]">
+                                {filteredApiKeys.map((key, idx) => (
+                                    <tr 
+                                        key={key.id || key.keyId || idx}
+                                        onClick={() => handleOpenEdit(key)}
+                                        className="hover:bg-[#181D24] transition-colors cursor-pointer group"
+                                    >
+                                        <td className="py-3 px-4 whitespace-nowrap">
+                                            <StatusBadge status={key.isActive ? 'healthy' : 'offline'} label={key.isActive ? 'Active' : 'Disabled'} />
+                                        </td>
+                                        <td className="py-3 px-4 font-medium text-zinc-200 whitespace-nowrap">
+                                            <span className="group-hover:text-[#4CB8D6] transition-colors">
+                                                {key.name}
+                                            </span>
+                                            {key.description && (
+                                                <span className="block text-[11px] text-zinc-500 font-normal">
+                                                    {key.description}
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td className="py-3 px-4 whitespace-nowrap">
+                                            <span className="text-[10px] font-mono uppercase bg-[#181D24] text-zinc-300 px-1.5 py-0.5 rounded border border-[#242932]">
+                                                {key.environment || 'production'}
+                                            </span>
+                                        </td>
+                                        <td className="py-3 px-4 whitespace-nowrap">
+                                            <span className="font-mono text-zinc-300 text-[11px] bg-[#0E1014] px-2 py-0.5 rounded border border-[#242932]">
+                                                {formatShortApiKey(key.keyValue, key.prefix)}
+                                            </span>
+                                        </td>
+                                        <td className="py-3 px-4 text-zinc-400 whitespace-nowrap font-mono text-[11px]">
+                                            {new Date(key.createdAt).toLocaleDateString()}
+                                        </td>
+                                        <td className="py-3 px-4 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                            {canCreateKeys ? (
+                                                <div className="flex items-center justify-end gap-1.5">
+                                                    <button
+                                                        onClick={() => handleToggleKeyStatus(key.keyId || key.id, key.isActive)}
+                                                        title={key.isActive ? "Deactivate key" : "Activate key"}
+                                                        className={cn(
+                                                            "p-1.5 rounded hover:bg-white/5 transition-colors cursor-pointer",
+                                                            key.isActive ? "text-[#D99A3D]" : "text-[#48B982]"
+                                                        )}
+                                                    >
+                                                        <Power size={13} />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleRotateKey(key.keyId || key.id)}
+                                                        title="Rotate key"
+                                                        className="p-1.5 rounded hover:bg-white/5 text-zinc-400 hover:text-[#4CB8D6] transition-colors cursor-pointer"
+                                                    >
+                                                        <RefreshCw size={13} />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDeleteKey(key.keyId || key.id)}
+                                                        title="Delete key"
+                                                        className="p-1.5 rounded hover:bg-white/5 text-zinc-400 hover:text-[#E45865] transition-colors cursor-pointer"
+                                                    >
+                                                        <Trash2 size={13} />
+                                                    </button>
+                                                </div>
+                                            ) : (
+                                                <span className="text-[10px] text-zinc-500 font-mono">Read Only</span>
+                                            )}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+
+            {/* Semantic Create API Key Modal */}
+            <Modal
+                isOpen={isCreateModalOpen}
+                onClose={() => setIsCreateModalOpen(false)}
+                title="Create API Key"
+                description="Generate an ingestion token with scoped permissions and network filters."
+                maxWidth="max-w-xl"
+            >
+                <form onSubmit={handleCreateKey} className="space-y-4">
+                    {/* General Section */}
+                    <div className="space-y-3">
+                        <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">1. General Details</span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                                <label className="text-xs text-zinc-300 block">Key Name *</label>
+                                <input
+                                    type="text"
+                                    value={newKeyName}
+                                    onChange={(e) => setNewKeyName(e.target.value)}
+                                    placeholder="e.g. gateway-production"
+                                    required
+                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                                />
+                            </div>
+
+                            <div className="space-y-1">
+                                <label className="text-xs text-zinc-300 block">Environment</label>
+                                <select
+                                    value={newKeyEnv}
+                                    onChange={(e: any) => setNewKeyEnv(e.target.value)}
+                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                                >
+                                    <option value="production">Production</option>
+                                    <option value="staging">Staging</option>
+                                    <option value="development">Development</option>
+                                    <option value="testing">Testing</option>
+                                </select>
                             </div>
                         </div>
-                        <div className="h-6 w-[1px] bg-border-color/30 hidden sm:block" />
-                        <div>
-                            <span className="text-[9px] uppercase tracking-wider text-muted-foreground block leading-none">Active Operator</span>
-                            <span className="text-foreground text-xs mt-0.5 block">{user?.username}</span>
-                        </div>
-                        <div className="h-6 w-[1px] bg-border-color/30 hidden sm:block" />
-                        <div>
-                            <span className="text-[9px] uppercase tracking-wider text-muted-foreground block leading-none">Operator Role</span>
-                            <Badge variant="default" className="mt-0.5 font-mono uppercase text-[9px] h-4.5 px-1.5">
-                                {user?.role?.replace('_', ' ')}
-                            </Badge>
+
+                        <div className="space-y-1">
+                            <label className="text-xs text-zinc-300 block">Description (Optional)</label>
+                            <input
+                                type="text"
+                                value={newKeyDesc}
+                                onChange={(e) => setNewKeyDesc(e.target.value)}
+                                placeholder="Describe service or team..."
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                            />
                         </div>
                     </div>
-                    <Badge variant="info" className="w-fit text-[10px] font-mono shrink-0">
-                        Tenant Scoped
-                    </Badge>
-                </div>
-            </div>
 
-            {/* Main Content Area */}
-            <div className="space-y-6">
-                {/* Provision New Ingestion Key */}
-                {canCreateKeys && (
-                    <Card className="border-cyan-500/10 bg-glass-card/20">
-                        <CardHeader className="pb-3">
-                            <CardTitle className="text-sm flex items-center gap-2">
-                                <Plus size={14} className="text-cyan-400" />
-                                Provision New Ingestion Key
-                            </CardTitle>
-                            <CardDescription className="text-xs">Configure Ingest Credentials, Expirations, Permissions, and Network Scopes</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <form onSubmit={handleGenerateKey} className="space-y-4">
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                    <div className="space-y-1.5">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Key Name *</label>
-                                        <Input
-                                            value={newKeyName}
-                                            onChange={(e) => setNewKeyName(e.target.value)}
-                                            placeholder="e.g. production-gateway"
-                                            required
-                                        />
-                                    </div>
-
-                                    <div className="space-y-1.5">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Target Environment</label>
-                                        <select
-                                            value={newKeyEnv}
-                                            onChange={(e: any) => setNewKeyEnv(e.target.value)}
-                                            className="w-full text-xs bg-input-bg border border-border-color focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none rounded-lg p-2.5 text-foreground h-9"
-                                        >
-                                            <option value="production">Production</option>
-                                            <option value="staging">Staging</option>
-                                            <option value="development">Development</option>
-                                            <option value="testing">Testing</option>
-                                        </select>
-                                    </div>
-
-                                    <div className="space-y-1.5">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Key Lifetime Expiry</label>
-                                        <select
-                                            value={newKeyExpires}
-                                            onChange={(e) => setNewKeyExpires(Number(e.target.value))}
-                                            className="w-full text-xs bg-input-bg border border-border-color focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none rounded-lg p-2.5 text-foreground h-9"
-                                        >
-                                            <option value={24}>24 Minutes (Temporary)</option>
-                                            <option value={60}>1 Hour</option>
-                                            <option value={1440}>1 Day (24 hours)</option>
-                                            <option value={43200}>30 Days</option>
-                                            <option value={525600}>365 Days (1 Year)</option>
-                                        </select>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className="space-y-1.5">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Key Description</label>
-                                        <Input
-                                            value={newKeyDesc}
-                                            onChange={(e) => setNewKeyDesc(e.target.value)}
-                                            placeholder="Describe key purpose..."
-                                        />
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Restrict to Service Names (Optional)</label>
-                                        <Input
-                                            value={newKeyServices}
-                                            onChange={(e) => setNewKeyServices(e.target.value)}
-                                            placeholder="e.g. rust-ingest, backend-auth (empty for all)"
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                    <div className="space-y-1.5">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Allowed IP Filters</label>
-                                        <Input
-                                            value={newKeyIPs}
-                                            onChange={(e) => setNewKeyIPs(e.target.value)}
-                                            placeholder="e.g. 192.168.1.0/24, 0.0.0.0/0"
-                                        />
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Allowed Domains / Origins</label>
-                                        <Input
-                                            value={newKeyOrigins}
-                                            onChange={(e) => setNewKeyOrigins(e.target.value)}
-                                            placeholder="e.g. https://domain.com, *"
-                                        />
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Rotation Alert Threshold (Days)</label>
-                                        <Input
-                                            type="number"
-                                            value={newKeyWarnDays}
-                                            onChange={(e) => setNewKeyWarnDays(Number(e.target.value))}
-                                            min={1}
-                                            max={365}
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="flex flex-wrap items-center gap-6 p-3 rounded-lg border border-border-color bg-glass-card/25">
-                                    <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Key Permissions Scope:</span>
-                                    <label className="flex items-center gap-2 text-xs font-semibold text-foreground cursor-pointer select-none">
-                                        <input 
-                                            type="checkbox" 
-                                            checked={newKeyCanIngest} 
-                                            onChange={(e) => setNewKeyCanIngest(e.target.checked)}
-                                            className="rounded bg-input-bg border-border-color text-cyan-500 focus:ring-cyan-500"
-                                        />
-                                        Ingest Analytics Data
-                                    </label>
-                                    <label className="flex items-center gap-2 text-xs font-semibold text-foreground cursor-pointer select-none">
-                                        <input 
-                                            type="checkbox" 
-                                            checked={newKeyCanRead} 
-                                            onChange={(e) => setNewKeyCanRead(e.target.checked)}
-                                            className="rounded bg-input-bg border-border-color text-cyan-500 focus:ring-cyan-500"
-                                        />
-                                        Read Telemetry Aggregations
-                                    </label>
-                                </div>
-
-                                <div className="flex justify-end">
-                                    <Button type="submit" className="text-xs h-9 gap-1.5 cursor-pointer" isLoading={createKeyMutation.isPending}>
-                                        <Plus size={14} />
-                                        Generate Ingestion Token
-                                    </Button>
-                                </div>
-                            </form>
-                        </CardContent>
-                    </Card>
-                )}
-
-                {/* Ingestion Credentials Table list with Search */}
-                <Card>
-                    <CardHeader className="pb-3 border-b border-border-color/20">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                            <div>
-                                <CardTitle className="text-base flex items-center gap-2">
-                                    <KeyRound className="text-cyan-400 w-4 h-4" />
-                                    Access Tokens Workspace
-                                </CardTitle>
-                                <CardDescription className="text-xs">Click on any key to inspect details, edit network scopes, rotate or deactivate.</CardDescription>
-                            </div>
-                            
-                            <div className="relative w-full sm:max-w-xs shrink-0">
-                                <Input
-                                    value={keySearchQuery}
-                                    onChange={(e) => setKeySearchQuery(e.target.value)}
-                                    placeholder="Search workspace keys..."
-                                    className="h-9 text-xs pl-8 pr-3"
+                    {/* Permissions Section */}
+                    <div className="space-y-2 pt-2 border-t border-[#242932]">
+                        <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">2. Permissions Scope</span>
+                        <div className="flex items-center gap-6">
+                            <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={newKeyCanIngest}
+                                    onChange={(e) => setNewKeyCanIngest(e.target.checked)}
+                                    className="rounded bg-[#0E1014] border-[#242932] text-[#4CB8D6]"
                                 />
-                                <span className="absolute left-2.5 top-3 text-muted-foreground/60">
-                                    <Search size={13} />
-                                </span>
+                                Ingest telemetry events
+                            </label>
+                            <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={newKeyCanRead}
+                                    onChange={(e) => setNewKeyCanRead(e.target.checked)}
+                                    className="rounded bg-[#0E1014] border-[#242932] text-[#4CB8D6]"
+                                />
+                                Read analytics metrics
+                            </label>
+                        </div>
+                    </div>
+
+                    {/* Network Restrictions Section */}
+                    <div className="space-y-3 pt-2 border-t border-[#242932]">
+                        <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">3. Network Restrictions</span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                                <label className="text-xs text-zinc-300 block">Allowed IP Ranges (CIDR)</label>
+                                <input
+                                    type="text"
+                                    value={newKeyIPs}
+                                    onChange={(e) => setNewKeyIPs(e.target.value)}
+                                    placeholder="0.0.0.0/0 (all IPs)"
+                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-[#4CB8D6]"
+                                />
+                            </div>
+
+                            <div className="space-y-1">
+                                <label className="text-xs text-zinc-300 block">Allowed Origins</label>
+                                <input
+                                    type="text"
+                                    value={newKeyOrigins}
+                                    onChange={(e) => setNewKeyOrigins(e.target.value)}
+                                    placeholder="* or https://app.domain.com"
+                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-[#4CB8D6]"
+                                />
                             </div>
                         </div>
-                    </CardHeader>
-                    <CardContent className="p-0">
-                        {loadingKeys ? (
-                            <div className="flex items-center justify-center py-12">
-                                <Loader2 className="animate-spin text-cyan-400 w-6 h-6" />
-                            </div>
-                        ) : filteredApiKeys.length === 0 ? (
-                            <div className="text-center py-12 flex flex-col items-center justify-center p-6">
-                                <ShieldAlert className="w-10 h-10 text-muted-foreground/30 mb-2.5" />
-                                <p className="text-sm font-semibold text-foreground">No Access Tokens Found</p>
-                                <p className="text-xs text-muted-foreground max-w-[280px] mt-1">
-                                    {keySearchQuery ? "No matches found for your search." : "There are no active ingestion credentials mapped to this client gateway."}
-                                </p>
-                            </div>
-                        ) : (
-                            <Table>
-                                <TableHeader>
-                                    <TableRow className="hover:bg-transparent">
-                                        <TableHead className="w-2/5">Ingestion Key Name</TableHead>
-                                        <TableHead className="w-1/5">Environment</TableHead>
-                                        <TableHead className="w-1/5">Created On</TableHead>
-                                        <TableHead className="w-1/5">Status</TableHead>
-                                        <TableHead className="text-right w-24">Quick Toggle</TableHead>
-                                    </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                    {filteredApiKeys.map((key, index) => (
-                                        <TableRow 
-                                            key={key.id || key.keyId || `apikey-${index}`}
-                                            onClick={() => handleOpenDetails(key)}
-                                            className="cursor-pointer hover:bg-glass-card-hover/40 transition-colors select-none"
-                                        >
-                                            <TableCell className="font-semibold text-sm w-2/5">
-                                                <div className="flex flex-col gap-0.5 pr-2">
-                                                    <span className="text-foreground hover:text-cyan-400 transition-colors flex items-center gap-1.5">
-                                                        {key.name}
-                                                        <Info size={11} className="text-muted-foreground/60" />
-                                                    </span>
-                                                    {key.prefix && (
-                                                        <code className="text-[10px] font-mono text-cyan-400 bg-cyan-500/5 px-1.5 py-0.5 rounded w-fit border border-cyan-500/10">
-                                                            Prefix: {key.prefix}***
-                                                        </code>
-                                                    )}
-                                                </div>
-                                            </TableCell>
-                                            
-                                            <TableCell className="w-1/5">
-                                                <Badge variant="outline" className="font-mono text-[9px] uppercase tracking-wider border-border-color bg-zinc-950/20">
-                                                    {key.environment || 'production'}
-                                                </Badge>
-                                            </TableCell>
+                    </div>
 
-                                            <TableCell className="text-xs text-muted-foreground w-1/5">
-                                                {new Date(key.createdAt).toLocaleDateString()}
-                                            </TableCell>
-                                            
-                                            <TableCell className="w-1/5">
-                                                <Badge variant={key.isActive ? "success" : "destructive"}>
-                                                    {key.isActive ? "Active" : "Disabled"}
-                                                </Badge>
-                                            </TableCell>
-                                            
-                                            <TableCell className="text-right w-24 align-middle">
-                                                {canCreateKeys ? (
-                                                    <div className="flex items-center justify-end">
-                                                        <button
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                handleToggleKeyStatus(key.id || key.keyId, key.isActive);
-                                                            }}
-                                                            title={key.isActive ? "Disable Token" : "Enable Token"}
-                                                            className={cn(
-                                                                "p-1.5 rounded-lg border transition-colors cursor-pointer inline-flex items-center justify-center",
-                                                                key.isActive 
-                                                                    ? "text-orange-400 border-orange-500/20 hover:bg-orange-500/10" 
-                                                                    : "text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/10"
-                                                            )}
-                                                        >
-                                                            <Power size={13} />
-                                                        </button>
-                                                    </div>
-                                                ) : (
-                                                    <span className="text-[10px] text-muted-foreground">None</span>
-                                                )}
-                                            </TableCell>
-                                        </TableRow>
-                                    ))}
-                                </TableBody>
-                            </Table>
-                        )}
-                    </CardContent>
-                </Card>
-            </div>
+                    {/* Actions */}
+                    <div className="flex items-center justify-end gap-2 pt-4 border-t border-[#242932]">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setIsCreateModalOpen(false)}
+                            className="text-xs h-8 cursor-pointer"
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            type="submit"
+                            size="sm"
+                            isLoading={createKeyMutation.isPending}
+                            className="text-xs h-8 bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold cursor-pointer"
+                        >
+                            Create Key
+                        </Button>
+                    </div>
+                </form>
+            </Modal>
 
-            {/* Generated Ingestion Token Display Modal */}
-            {isKeyModalOpen && generatedKey && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4 animate-in fade-in duration-200">
-                    <Card className="w-full max-w-lg border-cyan-500/30 bg-zinc-950 shadow-2xl relative">
-                        <CardHeader className="pb-3 border-b border-border-color/30">
-                            <CardTitle className="text-base flex items-center gap-2 text-foreground">
-                                <KeyRound className="text-cyan-400 w-5 h-5" />
-                                Save Your Ingestion Secret Key
-                            </CardTitle>
-                            <CardDescription className="text-xs text-rose-400 font-medium">
-                                Warning: This full secret key will never be shown again! Copy and store it in a secure environment.
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-4 pt-4">
-                            <div className="space-y-2">
-                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                    Raw Secret Token
-                                </label>
-                                <div className="flex items-center gap-2 p-3 bg-zinc-900 border border-border-color rounded-lg">
-                                    <code className="text-xs font-mono text-cyan-300 break-all select-all flex-1">
-                                        {generatedKey}
-                                    </code>
-                                    <Button
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() => handleCopyKey(generatedKey)}
-                                        className="shrink-0 h-8 gap-1.5 text-xs cursor-pointer"
-                                    >
-                                        {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
-                                        {copied ? 'Copied' : 'Copy'}
-                                    </Button>
-                                </div>
-                            </div>
-                            <div className="flex justify-end pt-2">
-                                <Button
-                                    size="sm"
-                                    onClick={() => {
-                                        setIsKeyModalOpen(false);
-                                        setGeneratedKey(null);
-                                    }}
-                                    className="text-xs h-8 px-4 cursor-pointer"
-                                >
-                                    I Have Stored This Key Safely
-                                </Button>
-                            </div>
-                        </CardContent>
-                    </Card>
+            {/* Secret Token Generated Modal */}
+            <Modal
+                isOpen={isSecretGeneratedModalOpen}
+                onClose={() => {
+                    setIsSecretGeneratedModalOpen(false);
+                    setGeneratedKey(null);
+                }}
+                title="API Key Created"
+                description="Copy and securely store your raw secret token. It will not be shown again."
+                maxWidth="max-w-md"
+            >
+                <div className="space-y-4">
+                    <div className="p-3 rounded bg-[#0E1014] border border-[#242932] flex items-center justify-between gap-2">
+                        <code className="text-xs font-mono text-[#4CB8D6] select-all break-all flex-1">
+                            {generatedKey}
+                        </code>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleCopyKey(generatedKey || '')}
+                            className="h-7 px-2.5 text-xs gap-1 cursor-pointer shrink-0"
+                        >
+                            {copied ? <Check size={12} className="text-[#48B982]" /> : <Copy size={12} />}
+                            {copied ? 'Copied' : 'Copy'}
+                        </Button>
+                    </div>
+
+                    <div className="flex justify-end pt-2">
+                        <Button
+                            size="sm"
+                            onClick={() => {
+                                setIsSecretGeneratedModalOpen(false);
+                                setGeneratedKey(null);
+                            }}
+                            className="text-xs h-8 cursor-pointer bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold"
+                        >
+                            Done
+                        </Button>
+                    </div>
                 </div>
-            )}
+            </Modal>
 
-            {/* Key Configuration Details Modal */}
+            {/* Edit Key Modal */}
             {selectedKeyForDetails && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4 animate-in fade-in duration-200">
-                    <Card className="w-full max-w-2xl border-cyan-500/30 bg-zinc-950 shadow-2xl relative max-h-[90vh] overflow-y-auto">
-                        <CardHeader className="pb-3 border-b border-border-color/30 flex flex-row items-center justify-between">
-                            <div>
-                                <CardTitle className="text-base flex items-center gap-2 text-foreground">
-                                    <KeyRound className="text-cyan-400 w-4 h-4" />
-                                    Key Details: {selectedKeyForDetails.name}
-                                </CardTitle>
-                                <CardDescription className="text-xs">
-                                    Configure permissions, rotate credentials, or update CIDR and domain filters.
-                                </CardDescription>
+                <Modal
+                    isOpen={!!selectedKeyForDetails}
+                    onClose={() => setSelectedKeyForDetails(null)}
+                    title={`Key Settings: ${selectedKeyForDetails.name}`}
+                    description="Update environment, IP filters, or rotate secret."
+                    maxWidth="max-w-lg"
+                >
+                    <form onSubmit={handleSaveEdit} className="space-y-4">
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                                <label className="text-xs text-zinc-300 block">Key Name</label>
+                                <input
+                                    type="text"
+                                    value={editKeyName}
+                                    onChange={(e) => setEditKeyName(e.target.value)}
+                                    required
+                                    disabled={!canCreateKeys}
+                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                                />
                             </div>
-                            <button
-                                onClick={() => setSelectedKeyForDetails(null)}
-                                className="p-1 rounded-lg text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                            >
-                                <X size={18} />
-                            </button>
-                        </CardHeader>
-                        <CardContent className="space-y-5 pt-4">
-                            {/* Key metadata banner */}
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 bg-zinc-900/60 rounded-xl border border-border-color/40 text-xs">
-                                <div>
-                                    <span className="text-[9px] uppercase font-bold text-muted-foreground block">Key ID</span>
-                                    <code className="font-mono text-[11px] text-cyan-300 truncate block mt-0.5">
-                                        {(selectedKeyForDetails.id || selectedKeyForDetails.keyId).substring(0, 10)}...
-                                    </code>
-                                </div>
-                                <div>
-                                    <span className="text-[9px] uppercase font-bold text-muted-foreground block">Prefix</span>
-                                    <code className="font-mono text-[11px] text-zinc-300 block mt-0.5">
-                                        {selectedKeyForDetails.prefix ? `${selectedKeyForDetails.prefix}***` : 'None'}
-                                    </code>
-                                </div>
-                                <div>
-                                    <span className="text-[9px] uppercase font-bold text-muted-foreground block">Created Date</span>
-                                    <span className="text-[11px] text-zinc-300 block mt-0.5">
-                                        {new Date(selectedKeyForDetails.createdAt).toLocaleDateString()}
-                                    </span>
-                                </div>
-                                <div>
-                                    <span className="text-[9px] uppercase font-bold text-muted-foreground block">Status</span>
-                                    <Badge variant={selectedKeyForDetails.isActive ? "success" : "destructive"} className="mt-0.5 text-[9px]">
-                                        {selectedKeyForDetails.isActive ? "Active" : "Disabled"}
-                                    </Badge>
-                                </div>
+                            <div className="space-y-1">
+                                <label className="text-xs text-zinc-300 block">Environment</label>
+                                <select
+                                    value={editKeyEnv}
+                                    onChange={(e: any) => setEditKeyEnv(e.target.value)}
+                                    disabled={!canCreateKeys}
+                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                                >
+                                    <option value="production">Production</option>
+                                    <option value="staging">Staging</option>
+                                    <option value="development">Development</option>
+                                    <option value="testing">Testing</option>
+                                </select>
                             </div>
+                        </div>
 
-                            {/* Edit Form */}
-                            <form onSubmit={handleSaveEditKey} className="space-y-4">
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                    <div className="space-y-1">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Key Name</label>
-                                        <Input
-                                            value={editKeyName}
-                                            onChange={(e) => setEditKeyName(e.target.value)}
-                                            required
-                                            disabled={!canCreateKeys}
-                                            className="h-8 text-xs"
-                                        />
-                                    </div>
-                                    <div className="space-y-1">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Environment</label>
-                                        <select
-                                            value={editKeyEnv}
-                                            onChange={(e: any) => setEditKeyEnv(e.target.value)}
-                                            disabled={!canCreateKeys}
-                                            className="w-full text-xs bg-input-bg border border-border-color rounded-lg p-2 text-foreground h-8"
-                                        >
-                                            <option value="production">Production</option>
-                                            <option value="staging">Staging</option>
-                                            <option value="development">Development</option>
-                                            <option value="testing">Testing</option>
-                                        </select>
-                                    </div>
-                                </div>
+                        <div className="space-y-1">
+                            <label className="text-xs text-zinc-300 block">Description (Optional)</label>
+                            <input
+                                type="text"
+                                value={editKeyDesc}
+                                onChange={(e) => setEditKeyDesc(e.target.value)}
+                                disabled={!canCreateKeys}
+                                placeholder="Purpose of this key, service or deployment..."
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                            />
+                        </div>
 
-                                <div className="space-y-1">
-                                    <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Description</label>
-                                    <Input
-                                        value={editKeyDesc}
-                                        onChange={(e) => setEditKeyDesc(e.target.value)}
+                        {/* Scopes & Permissions */}
+                        <div className="space-y-2 pt-1 border-t border-[#242932]">
+                            <label className="text-xs font-medium text-zinc-300 block">Key Permissions & Scopes</label>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <label className={cn(
+                                    "flex items-start gap-2 p-2.5 rounded border transition-colors cursor-pointer",
+                                    editKeyCanIngest ? "bg-[#4CB8D6]/10 border-[#4CB8D6]/30" : "bg-[#0E1014] border-[#242932]",
+                                    !canCreateKeys && "opacity-60 pointer-events-none"
+                                )}>
+                                    <input
+                                        type="checkbox"
+                                        checked={editKeyCanIngest}
+                                        onChange={(e) => setEditKeyCanIngest(e.target.checked)}
                                         disabled={!canCreateKeys}
-                                        className="h-8 text-xs"
+                                        className="mt-0.5 rounded bg-zinc-900 border-zinc-700 text-[#4CB8D6] focus:ring-0"
+                                    />
+                                    <div>
+                                        <p className="text-xs font-medium text-zinc-200">Can Ingest Metrics</p>
+                                        <p className="text-[10px] text-zinc-400">Allows sending hit & metric telemetry to /hit</p>
+                                    </div>
+                                </label>
+
+                                <label className={cn(
+                                    "flex items-start gap-2 p-2.5 rounded border transition-colors cursor-pointer",
+                                    editKeyCanRead ? "bg-[#4CB8D6]/10 border-[#4CB8D6]/30" : "bg-[#0E1014] border-[#242932]",
+                                    !canCreateKeys && "opacity-60 pointer-events-none"
+                                )}>
+                                    <input
+                                        type="checkbox"
+                                        checked={editKeyCanRead}
+                                        onChange={(e) => setEditKeyCanRead(e.target.checked)}
+                                        disabled={!canCreateKeys}
+                                        className="mt-0.5 rounded bg-zinc-900 border-zinc-700 text-[#4CB8D6] focus:ring-0"
+                                    />
+                                    <div>
+                                        <p className="text-xs font-medium text-zinc-200">Can Read Analytics</p>
+                                        <p className="text-[10px] text-zinc-400">Allows query access to metrics & statistics</p>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        {/* Security / Network Filters */}
+                        <div className="space-y-3 pt-1 border-t border-[#242932]">
+                            <label className="text-xs font-medium text-zinc-300 block">Security & Origin Filters</label>
+                            
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                    <label className="text-xs text-zinc-300 block">Allowed IP Filters (CIDR)</label>
+                                    <input
+                                        type="text"
+                                        value={editKeyIPs}
+                                        onChange={(e) => setEditKeyIPs(e.target.value)}
+                                        disabled={!canCreateKeys}
+                                        placeholder="0.0.0.0/0 (all IPs)"
+                                        className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-[#4CB8D6]"
                                     />
                                 </div>
 
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                    <div className="space-y-1">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Allowed IP Filters</label>
-                                        <Input
-                                            value={editKeyIPs}
-                                            onChange={(e) => setEditKeyIPs(e.target.value)}
-                                            disabled={!canCreateKeys}
-                                            className="h-8 text-xs font-mono"
-                                        />
-                                    </div>
-                                    <div className="space-y-1">
-                                        <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Allowed Domains / Origins</label>
-                                        <Input
-                                            value={editKeyOrigins}
-                                            onChange={(e) => setEditKeyOrigins(e.target.value)}
-                                            disabled={!canCreateKeys}
-                                            className="h-8 text-xs font-mono"
-                                        />
-                                    </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs text-zinc-300 block">Allowed Origins</label>
+                                    <input
+                                        type="text"
+                                        value={editKeyOrigins}
+                                        onChange={(e) => setEditKeyOrigins(e.target.value)}
+                                        disabled={!canCreateKeys}
+                                        placeholder="* or https://app.domain.com"
+                                        className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-[#4CB8D6]"
+                                    />
                                 </div>
+                            </div>
+                        </div>
 
-                                <div className="flex flex-wrap items-center gap-6 p-3 rounded-lg border border-border-color bg-zinc-900/40">
-                                    <label className="flex items-center gap-2 text-xs font-semibold text-foreground cursor-pointer">
-                                        <input
-                                            type="checkbox"
-                                            checked={editKeyCanIngest}
-                                            onChange={(e) => setEditKeyCanIngest(e.target.checked)}
-                                            disabled={!canCreateKeys}
-                                            className="rounded bg-input-bg border-border-color text-cyan-500"
-                                        />
-                                        Can Ingest Metrics
-                                    </label>
-                                    <label className="flex items-center gap-2 text-xs font-semibold text-foreground cursor-pointer">
-                                        <input
-                                            type="checkbox"
-                                            checked={editKeyCanRead}
-                                            onChange={(e) => setEditKeyCanRead(e.target.checked)}
-                                            disabled={!canCreateKeys}
-                                            className="rounded bg-input-bg border-border-color text-cyan-500"
-                                        />
-                                        Can Read Analytics
-                                    </label>
+                        <div className="flex items-center justify-between pt-4 border-t border-[#242932]">
+                            {canCreateKeys && (
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => handleRotateKey(selectedKeyForDetails.keyId || selectedKeyForDetails.id)}
+                                        className="h-8 text-xs gap-1 text-[#D99A3D] hover:bg-[#D99A3D]/10 cursor-pointer"
+                                    >
+                                        <RefreshCw size={12} />
+                                        Rotate Secret
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => handleDeleteKey(selectedKeyForDetails.keyId || selectedKeyForDetails.id)}
+                                        className="h-8 text-xs gap-1 text-[#E45865] hover:bg-[#E45865]/10 cursor-pointer"
+                                    >
+                                        <Trash2 size={12} />
+                                        Delete
+                                    </Button>
                                 </div>
+                            )}
 
+                            <div className="flex items-center gap-2 ml-auto">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setSelectedKeyForDetails(null)}
+                                    className="h-8 text-xs cursor-pointer"
+                                >
+                                    Cancel
+                                </Button>
                                 {canCreateKeys && (
-                                    <div className="flex items-center justify-between pt-3 border-t border-border-color/30">
-                                        <div className="flex gap-2">
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                onClick={() => handleRotateKey(selectedKeyForDetails.id || selectedKeyForDetails.keyId)}
-                                                className="h-8 text-xs gap-1 border-amber-500/20 text-amber-400 hover:bg-amber-500/10 cursor-pointer"
-                                            >
-                                                <RefreshCw size={12} />
-                                                Rotate Secret
-                                            </Button>
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                onClick={() => handleDeleteKey(selectedKeyForDetails.id || selectedKeyForDetails.keyId)}
-                                                className="h-8 text-xs gap-1 border-rose-500/20 text-rose-400 hover:bg-rose-500/10 cursor-pointer"
-                                            >
-                                                <Trash2 size={12} />
-                                                Delete Key
-                                            </Button>
-                                        </div>
-                                        <Button
-                                            type="submit"
-                                            size="sm"
-                                            className="h-8 text-xs gap-1 cursor-pointer"
-                                            isLoading={updateKeyMutation.isPending}
-                                        >
-                                            <Save size={12} />
-                                            Save Changes
-                                        </Button>
-                                    </div>
+                                    <Button
+                                        type="submit"
+                                        size="sm"
+                                        isLoading={updateKeyMutation.isPending}
+                                        className="h-8 text-xs bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold cursor-pointer"
+                                    >
+                                        Save Changes
+                                    </Button>
                                 )}
-                            </form>
-                        </CardContent>
-                    </Card>
-                </div>
+                            </div>
+                        </div>
+                    </form>
+                </Modal>
             )}
         </div>
     );

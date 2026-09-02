@@ -36,6 +36,10 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &AppConfig) {
                     .route(
                         "/users/{userId}/deactivate",
                         web::patch().to(auth::deactivate_user),
+                    )
+                    .route(
+                        "/users/{userId}/activate",
+                        web::patch().to(auth::activate_user),
                     ),
             ),
     );
@@ -60,6 +64,14 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &AppConfig) {
             .route(
                 "/admin/clients/{clientId}/users",
                 web::post().to(client::create_client_user),
+            )
+            .route(
+                "/admin/clients/{clientId}/users",
+                web::get().to(client::get_client_users),
+            )
+            .route(
+                "/client/users",
+                web::get().to(client::get_current_client_users),
             )
             .route(
                 "/admin/clients/{clientId}/api/keys",

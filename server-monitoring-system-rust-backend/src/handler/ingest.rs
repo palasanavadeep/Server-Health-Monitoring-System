@@ -15,11 +15,14 @@ pub async fn ingest_hit(
     req: HttpRequest,
     body: web::Json<IngestHitRequest>,
 ) -> HttpResponse {
+    tracing::info!("Ingest hit request received");
     // Validate API key and extract client context
     let validated = match validate_api_key::validate_api_key(req.clone(), state.clone()).await {
         Ok(v) => v,
         Err(response) => return response,
     };
+
+    tracing::info!("Api key validated {:?}", validated);
 
     let ip = req
         .connection_info()

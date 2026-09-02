@@ -211,6 +211,31 @@ impl ClientService {
         Ok(created.into())
     }
 
+    /// Get all users belonging to a client organization.
+    ///
+    /// Super admin can view users of any client.
+    /// Client admin / viewer can only view users of their own client.
+    pub async fn get_client_users(
+        &self,
+        client_id: &str,
+        user_role: &str,
+        user_client_id: Option<&str>,
+    ) -> Result<Vec<UserResponse>, AppError> {
+        if !Self::can_user_access_client(user_role, user_client_id, client_id) {
+            return Err(AppError::forbidden(
+                "Access denied - You can only view users for your own client organization",
+            ));
+        }
+
+        self.client_repository
+            .find_by_id(client_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("Client not found"))?;
+
+        let users = self.user_repository.find_by_client_id(client_id).await?;
+        Ok(users.into_iter().map(Into::into).collect())
+    }
+
     /// Create an API key for a client.
     pub async fn create_api_key(
         &self,
@@ -286,7 +311,8 @@ impl ClientService {
         if !Self::can_user_access_client(user_role, user_client_id, client_id) {
             return Err(AppError::forbidden("Access denied to this client"));
         }
-        self.api_key_repository.find_by_client_id(client_id).await
+        let keys = self.api_key_repository.find_by_client_id(client_id).await?;
+        Ok(keys.into_iter().map(|k| k.to_masked()).collect())
     }
 
     /// Look up client + key by raw API key value (used by middleware).
@@ -331,9 +357,10 @@ impl ClientService {
             ..Default::default()
         };
 
-        self.api_key_repository
+        let updated = self.api_key_repository
             .update_by_key_id(key_id, updates)
-            .await
+            .await?;
+        Ok(updated.map(|k| k.to_masked()))
     }
 
     /// Delete an API key.
@@ -364,9 +391,10 @@ impl ClientService {
             is_active: Some(is_active),
             ..Default::default()
         };
-        self.api_key_repository
+        let updated = self.api_key_repository
             .update_by_key_id(key_id, updates)
-            .await
+            .await?;
+        Ok(updated.map(|k| k.to_masked()))
     }
 
     /// Rotate an API key (generate a new key value).
@@ -401,7 +429,8 @@ impl ClientService {
         user_role: &str,
         user_client_id: Option<&str>,
     ) -> Result<ApiKey, AppError> {
-        self.validate_api_key_access(client_id, key_id, user_role, user_client_id)
-            .await
+        let key = self.validate_api_key_access(client_id, key_id, user_role, user_client_id)
+            .await?;
+        Ok(key.to_masked())
     }
 }

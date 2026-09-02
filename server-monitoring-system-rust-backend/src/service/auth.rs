@@ -168,14 +168,94 @@ impl AuthService {
         Ok(user.into())
     }
 
-    /// Deactivate a user account.
-    pub async fn deactivate_user(&self, user_id: &str) -> Result<UserResponse, AppError> {
-        let user = self
+    /// Check if caller is authorized to deactivate or activate the target user.
+    ///
+    /// Rules:
+    /// - `super_admin` can manage any user.
+    /// - `client_admin` can manage users within their own client organization (but cannot modify super_admin).
+    /// - The user themselves (`caller_user_id == target_user_id`) can manage their own account.
+    /// - All others are forbidden.
+    fn can_manage_user_status(
+        caller_user_id: &str,
+        caller_role: &str,
+        caller_client_id: Option<&str>,
+        target_user: &User,
+    ) -> bool {
+        if caller_role == Role::SuperAdmin.as_str() {
+            return true;
+        }
+
+        if let Some(ref target_id) = target_user.id {
+            if target_id == caller_user_id {
+                return true;
+            }
+        }
+
+        if caller_role == Role::ClientAdmin.as_str() && target_user.role != Role::SuperAdmin {
+            if let (Some(caller_cid), Some(target_cid)) = (caller_client_id, target_user.client_id.as_deref()) {
+                return caller_cid == target_cid;
+            }
+        }
+
+        false
+    }
+
+    /// Deactivate a user account with strict authorization checks.
+    pub async fn deactivate_user(
+        &self,
+        target_user_id: &str,
+        caller_user_id: &str,
+        caller_role: &str,
+        caller_client_id: Option<&str>,
+    ) -> Result<UserResponse, AppError> {
+        let target_user = self
             .user_repository
-            .deactivate(user_id)
+            .find_by_id(target_user_id)
             .await?
             .ok_or_else(|| AppError::not_found("User not found"))?;
-        Ok(user.into())
+
+        if !Self::can_manage_user_status(caller_user_id, caller_role, caller_client_id, &target_user) {
+            return Err(AppError::forbidden(
+                "Access denied - Only super_admin, client_admin of the organization, or the user themselves can deactivate this account",
+            ));
+        }
+
+        let updated = self
+            .user_repository
+            .deactivate(target_user_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("User not found"))?;
+
+        Ok(updated.into())
+    }
+
+    /// Activate a user account with strict authorization checks.
+    pub async fn activate_user(
+        &self,
+        target_user_id: &str,
+        caller_user_id: &str,
+        caller_role: &str,
+        caller_client_id: Option<&str>,
+    ) -> Result<UserResponse, AppError> {
+        let target_user = self
+            .user_repository
+            .find_by_id(target_user_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("User not found"))?;
+
+        if !Self::can_manage_user_status(caller_user_id, caller_role, caller_client_id, &target_user) {
+            return Err(AppError::forbidden(
+                "Access denied - Only super_admin, client_admin of the organization, or the user themselves can activate this account",
+            ));
+        }
+
+        let updated = self
+            .user_repository
+            .activate(target_user_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("User not found"))?;
+
+        Ok(updated.into())
     }
 
     /// Check if user has super_admin role.

@@ -5,11 +5,19 @@ import { clientApi, ApiKeyCreateInput, CreateClientUserInput } from '@/lib/api';
 
 export const CLIENT_QUERY_KEYS = {
     API_KEYS: (clientId: string) => ['apiKeys', clientId],
+    USERS: (clientId?: string) => ['clientUsers', clientId || 'current'],
 };
 
 export function useCreateClientMutation() {
     return useMutation({
         mutationFn: clientApi.createClient,
+    });
+}
+
+export function useClientUsersQuery(clientId?: string) {
+    return useQuery({
+        queryKey: CLIENT_QUERY_KEYS.USERS(clientId),
+        queryFn: () => clientApi.getClientUsers(clientId),
     });
 }
 
@@ -33,8 +41,13 @@ export function useCreateApiKeyMutation(clientId: string) {
 }
 
 export function useCreateClientUserMutation(clientId: string) {
+    const queryClient = useQueryClient();
     return useMutation({
         mutationFn: (userData: CreateClientUserInput) => clientApi.createClientUser(clientId, userData),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: CLIENT_QUERY_KEYS.USERS(clientId) });
+            queryClient.invalidateQueries({ queryKey: CLIENT_QUERY_KEYS.USERS() });
+        },
     });
 }
 

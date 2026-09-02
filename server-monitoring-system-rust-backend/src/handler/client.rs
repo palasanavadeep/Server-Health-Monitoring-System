@@ -5,6 +5,7 @@ use crate::dto::request::client::{
     CreateApiKeyRequest, CreateClientRequest, CreateClientUserRequest, RotateApiKeyRequest,
     UpdateApiKeyRequest,
 };
+use crate::error::app_error::AppError;
 use crate::middleware::authenticate::AuthenticatedUser;
 use crate::util::response::ResponseFormatter;
 
@@ -36,6 +37,7 @@ pub async fn create_client(
 ) -> HttpResponse {
     let user = require_user!(&req);
 
+    tracing::info!("User : {:?}", user);
     match state
         .auth_service
         .check_super_admin_permissions(&user.user_id)
@@ -85,6 +87,55 @@ pub async fn create_client_user(
             user_resp,
             "Client user created successfully",
         )),
+        Err(e) => e.to_response(),
+    }
+}
+
+/// GET /api/admin/clients/{clientId}/users
+pub async fn get_client_users(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<String>,
+) -> HttpResponse {
+    let user = require_user!(&req);
+    let client_id = path.into_inner();
+
+    match state
+        .client_service
+        .get_client_users(&client_id, &user.role, user.client_id.as_deref())
+        .await
+    {
+        Ok(users) => {
+            HttpResponse::Ok().json(ResponseFormatter::ok(users, "Client users fetched successfully"))
+        }
+        Err(e) => e.to_response(),
+    }
+}
+
+/// GET /api/client/users (convenience endpoint for current logged-in user's client)
+pub async fn get_current_client_users(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+) -> HttpResponse {
+    let user = require_user!(&req);
+    let client_id = match user.client_id.as_deref() {
+        Some(cid) => cid,
+        None => {
+            return AppError::bad_request(
+                "Logged-in user is not associated with any client organization",
+            )
+            .to_response();
+        }
+    };
+
+    match state
+        .client_service
+        .get_client_users(client_id, &user.role, user.client_id.as_deref())
+        .await
+    {
+        Ok(users) => {
+            HttpResponse::Ok().json(ResponseFormatter::ok(users, "Client users fetched successfully"))
+        }
         Err(e) => e.to_response(),
     }
 }

@@ -5,66 +5,82 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/auth-context';
 import {
-    LayoutDashboard,
-    Settings,
-    Zap,
-    KeyRound,
+    Activity,
     Braces,
-    LogOut,
-    Building,
+    KeyRound,
     Users,
+    Settings,
+    Server,
+    FileText,
+    Bell,
+    AlertOctagon,
+    Boxes,
+    Building,
+    LogOut,
+    Radio,
 } from 'lucide-react';
 
-const regularNavItems = [
+interface NavItem {
+    title: string;
+    href: string;
+    icon: any;
+    disabled?: boolean;
+    badge?: string;
+    hideForRoles?: string[];
+}
+
+interface NavSection {
+    section: string;
+    items: NavItem[];
+}
+
+const clientNavSections: NavSection[] = [
     {
-        title: 'Overview',
-        href: '/dashboard',
-        icon: LayoutDashboard,
-        description: 'Main metrics dashboard'
+        section: "MONITOR",
+        items: [
+            { title: "Overview", href: "/dashboard", icon: Activity },
+            { title: "API Routes", href: "/dashboard/apis", icon: Braces },
+            { title: "Services", href: "/dashboard/services", icon: Server, badge: "Upcoming", disabled: true },
+            { title: "Logs", href: "/dashboard/logs", icon: FileText, badge: "Upcoming", disabled: true },
+        ]
     },
     {
-        title: 'APIs & Latencies',
-        href: '/dashboard/apis',
-        icon: Braces,
-        description: 'API endpoint performance'
+        section: "OPERATIONS",
+        items: [
+            { title: "Alerts", href: "/dashboard/alerts", icon: Bell, badge: "Upcoming", disabled: true },
+            { title: "Incidents", href: "/dashboard/incidents", icon: AlertOctagon, badge: "Upcoming", disabled: true },
+        ]
     },
     {
-        title: 'API Keys',
-        href: '/dashboard/clients',
-        icon: KeyRound,
-        description: 'Manage ingestion tokens'
+        section: "ACCESS",
+        items: [
+            { title: "API Keys", href: "/dashboard/clients", icon: KeyRound },
+            { title: "Operators", href: "/dashboard/operators", icon: Users, hideForRoles: ['client_viewer'] },
+        ]
     },
     {
-        title: 'Operator Users',
-        href: '/dashboard/operators',
-        icon: Users,
-        description: 'Onboard & manage operators',
-        hideForRoles: ['client_viewer']
-    },
+        section: "CONFIGURE",
+        items: [
+            { title: "Integrations", href: "/dashboard/integrations", icon: Boxes, badge: "Upcoming", disabled: true },
+            { title: "Settings", href: "/dashboard/settings", icon: Settings },
+        ]
+    }
 ];
 
-const superAdminNavItems = [
+const superAdminNavSections: NavSection[] = [
     {
-        title: 'Tenants Management',
-        href: '/dashboard/tenants',
-        icon: Building,
-        description: 'Onboard and manage tenant organizations'
+        section: "TENANTS",
+        items: [
+            { title: "Tenants", href: "/dashboard/tenants", icon: Building },
+            { title: "Tenant Users", href: "/dashboard/tenants/users", icon: Users },
+        ]
     },
     {
-        title: 'Tenant Users',
-        href: '/dashboard/tenants/users',
-        icon: Users,
-        description: 'Provision users for tenants'
-    },
-];
-
-const bottomNavItems = [
-    {
-        title: 'Settings',
-        href: '/dashboard/settings',
-        icon: Settings,
-        description: 'App settings'
-    },
+        section: "CONFIGURE",
+        items: [
+            { title: "Settings", href: "/dashboard/settings", icon: Settings },
+        ]
+    }
 ];
 
 interface SidebarProps {
@@ -76,133 +92,135 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     const pathname = usePathname();
     const { user, logout } = useAuth();
     const isSuperAdmin = user?.role === 'super_admin';
-    const activeNavItems = isSuperAdmin 
-        ? superAdminNavItems 
-        : regularNavItems.filter(item => !item.hideForRoles || !item.hideForRoles.includes(user?.role || ''));
+    const sections = isSuperAdmin ? superAdminNavSections : clientNavSections;
 
     return (
         <>
             {isOpen && (
                 <div
-                    className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden cursor-pointer"
+                    className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs lg:hidden cursor-pointer"
                     onClick={onClose}
                     aria-hidden="true"
                 />
             )}
             <aside
                 className={cn(
-                    "fixed top-0 bottom-0 left-0 z-40 w-64 border-r border-border-color bg-glass-card/90 backdrop-blur-xl transition-transform duration-300 lg:static lg:translate-x-0",
+                    "fixed top-0 bottom-0 left-0 z-40 w-60 border-r border-[#242932] bg-[#0E1014] flex flex-col justify-between transition-transform duration-200 lg:static lg:translate-x-0 select-none",
                     isOpen ? "translate-x-0" : "-translate-x-full"
                 )}
                 aria-label="Sidebar"
-                aria-expanded={isOpen}
             >
-                <div className="flex flex-col h-full p-5 justify-between">
-                    {/* Top: Logo & Nav */}
-                    <div className="space-y-6">
-                        {/* Logo Section */}
-                        <div className="flex items-center gap-3 px-1">
-                            <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-md shadow-cyan-500/5 animate-pulse-slow">
-                                <Zap size={18} aria-hidden="true" />
+                {/* Top Section */}
+                <div className="flex flex-col flex-1 overflow-y-auto">
+                    {/* Brand Header (56px) */}
+                    <div className="h-14 flex items-center px-4 border-b border-[#242932] shrink-0">
+                        <div className="flex items-center gap-2.5">
+                            <div className="w-6 h-6 rounded bg-[#4CB8D6]/10 border border-[#4CB8D6]/20 flex items-center justify-center text-[#4CB8D6]">
+                                <Radio size={13} />
                             </div>
-                            <div>
-                                <h2 className="text-base font-bold bg-gradient-to-r from-cyan-400 to-emerald-400 bg-clip-text text-transparent">Telemetry Core</h2>
-                                <p className="text-[9px] text-muted-foreground uppercase font-bold tracking-wider">
-                                    {isSuperAdmin ? 'Super Admin' : 'DevOps Streaming'}
-                                </p>
-                            </div>
+                            <span className="font-semibold text-sm tracking-tight text-zinc-100">
+                                Telemetry Core
+                            </span>
                         </div>
-
-                        {/* Navigation */}
-                        <nav className="space-y-1" aria-label="Main navigation">
-                            {activeNavItems.map((item) => {
-                                const Icon = item.icon;
-                                const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href));
-                                return (
-                                    <Link
-                                        key={item.href}
-                                        href={item.href}
-                                        onClick={onClose}
-                                        className={cn(
-                                            "flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group cursor-pointer border",
-                                            isActive 
-                                                ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/20 shadow-md shadow-cyan-500/5" 
-                                                : "text-muted-foreground hover:text-foreground hover:bg-white/5 border-transparent"
-                                        )}
-                                    >
-                                        <Icon 
-                                            size={17} 
-                                            className={cn(
-                                                "transition-colors", 
-                                                isActive ? "text-cyan-400" : "text-muted-foreground group-hover:text-foreground"
-                                            )} 
-                                            aria-hidden="true" 
-                                        />
-                                        <span>{item.title}</span>
-                                    </Link>
-                                );
-                            })}
-                        </nav>
                     </div>
 
-                    {/* Bottom: Settings & User Profile Section */}
-                    <div className="space-y-4">
-                        {/* Settings Link */}
-                        <div className="space-y-1">
-                            {bottomNavItems.map((item) => {
-                                const Icon = item.icon;
-                                const isActive = pathname === item.href;
-                                return (
-                                    <Link
-                                        key={item.href}
-                                        href={item.href}
-                                        onClick={onClose}
-                                        className={cn(
-                                            "flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group cursor-pointer border",
-                                            isActive 
-                                                ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/20 shadow-md shadow-cyan-500/5" 
-                                                : "text-muted-foreground hover:text-foreground hover:bg-white/5 border-transparent"
-                                        )}
-                                    >
-                                        <Icon 
-                                            size={17} 
-                                            className={cn(
-                                                "transition-colors", 
-                                                isActive ? "text-cyan-400" : "text-muted-foreground group-hover:text-foreground"
-                                            )} 
-                                            aria-hidden="true" 
-                                        />
-                                        <span>{item.title}</span>
-                                    </Link>
-                                );
-                            })}
-                        </div>
+                    {/* Navigation Sections */}
+                    <div className="p-3 space-y-5 flex-1">
+                        {sections.map((sectionGroup) => {
+                            const visibleItems = sectionGroup.items.filter(
+                                item => !item.hideForRoles || !item.hideForRoles.includes(user?.role || '')
+                            );
 
-                        {/* Premium User Profile Section */}
-                        {user && (
-                            <div className="flex items-center justify-between p-3 rounded-xl border border-border-color bg-glass-card/45 shadow-sm">
-                                <div className="flex items-center gap-2.5 min-w-0">
-                                    {/* Avatar with live status pulse dot */}
-                                    <div className="relative flex-shrink-0 w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center justify-center font-bold text-xs uppercase">
-                                        {user?.username?.substring(0, 2) ?? 'OP'}
-                                        <span className="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-emerald-500 border border-zinc-950 animate-pulse" />
-                                    </div>
-                                    <div className="min-w-0">
-                                        <p className="text-xs font-bold text-foreground truncate">{user?.username ?? 'Operator'}</p>
-                                        <p className="text-[9px] text-muted-foreground uppercase font-bold tracking-wider">{user?.role ?? 'User'}</p>
-                                    </div>
+                            if (visibleItems.length === 0) return null;
+
+                            return (
+                                <div key={sectionGroup.section} className="space-y-1">
+                                    <span className="px-2.5 text-[10px] font-semibold tracking-wider text-zinc-400 uppercase block mb-1">
+                                        {sectionGroup.section}
+                                    </span>
+
+                                    {visibleItems.map((item) => {
+                                        const Icon = item.icon;
+                                        const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href));
+
+                                        if (item.disabled) {
+                                            return (
+                                                <div
+                                                    key={item.title}
+                                                    className="flex items-center justify-between px-2.5 py-1.5 rounded text-xs text-zinc-400 opacity-60 cursor-not-allowed"
+                                                >
+                                                    <div className="flex items-center gap-2.5">
+                                                        <Icon size={14} className="text-zinc-400" />
+                                                        <span>{item.title}</span>
+                                                    </div>
+                                                    {item.badge && (
+                                                        <span className="text-[9px] font-mono uppercase bg-zinc-900 text-zinc-400 px-1 py-0.2 rounded border border-[#242932]">
+                                                            {item.badge}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            );
+                                        }
+
+                                        return (
+                                            <Link
+                                                key={item.href}
+                                                href={item.href}
+                                                onClick={onClose}
+                                                className={cn(
+                                                    "flex items-center justify-between px-2.5 py-1.5 rounded text-xs font-medium transition-colors cursor-pointer",
+                                                    isActive
+                                                        ? "bg-[#181D24] text-zinc-100 font-semibold border-l-2 border-[#4CB8D6]"
+                                                        : "text-zinc-400 hover:text-zinc-200 hover:bg-[#15191F]"
+                                                )}
+                                            >
+                                                <div className="flex items-center gap-2.5">
+                                                    <Icon 
+                                                        size={14} 
+                                                        className={cn(
+                                                            "transition-colors",
+                                                            isActive ? "text-[#4CB8D6]" : "text-zinc-400 group-hover:text-zinc-300"
+                                                        )} 
+                                                    />
+                                                    <span>{item.title}</span>
+                                                </div>
+                                            </Link>
+                                        );
+                                    })}
                                 </div>
-                                <button
-                                    onClick={logout}
-                                    className="p-1.5 rounded-lg text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors cursor-pointer border border-transparent hover:border-rose-500/20"
-                                    aria-label="Log out"
-                                >
-                                    <LogOut size={14} />
-                                </button>
-                            </div>
-                        )}
+                            );
+                        })}
                     </div>
                 </div>
+
+                {/* Bottom User / Operator Profile Card */}
+                {user && (
+                    <div className="p-3 border-t border-[#242932] bg-[#0B0D10]/50 shrink-0">
+                        <div className="flex items-center justify-between gap-2 p-2 rounded hover:bg-[#15191F] transition-colors">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="w-7 h-7 rounded bg-[#181D24] border border-[#242932] flex items-center justify-center font-bold text-xs text-[#4CB8D6] shrink-0 uppercase">
+                                    {user?.username?.substring(0, 2) || 'OP'}
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-xs font-semibold text-zinc-200 truncate leading-tight">
+                                        {user?.username || 'Operator'}
+                                    </p>
+                                    <p className="text-[10px] text-zinc-400 font-mono truncate leading-none mt-0.5">
+                                        {user?.role?.replace('_', ' ') || 'User'}
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={logout}
+                                className="p-1 rounded text-zinc-400 hover:text-[#E45865] hover:bg-[#E45865]/10 transition-colors cursor-pointer shrink-0"
+                                title="Log out"
+                                aria-label="Log out"
+                            >
+                                <LogOut size={13} />
+                            </button>
+                        </div>
+                    </div>
+                )}
             </aside>
         </>
     );

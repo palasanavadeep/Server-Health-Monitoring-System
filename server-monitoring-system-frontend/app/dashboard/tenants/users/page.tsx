@@ -1,29 +1,27 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { notFound, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import { useAuth } from '@/contexts/auth-context';
 import { useCreateClientUserMutation } from '@/hooks/use-client-queries';
 import { authApi } from '@/lib/api';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Input } from '@/components/ui/input';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/contexts/toast-context';
 import { 
     Users, 
     UserPlus, 
-    Building, 
-    Mail, 
-    Lock, 
-    Eye, 
-    EyeOff, 
-    Shield, 
+    Search, 
+    ChevronDown, 
     UserMinus, 
-    ArrowLeft
+    UserCheck,
+    Building, 
+    ArrowLeft,
+    Eye,
+    EyeOff
 } from 'lucide-react';
-import Link from 'next/link';
 
 interface ProvisionedUser {
     id: string;
@@ -45,7 +43,8 @@ export default function TenantUsersPage() {
         notFound();
     }
 
-    // Pre-populate clientId from query params if passed from /dashboard/tenants
+    const [isProvisionModalOpen, setIsProvisionModalOpen] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
     const [targetClientId, setTargetClientId] = useState('');
     const [username, setUsername] = useState('');
     const [email, setEmail] = useState('');
@@ -54,7 +53,7 @@ export default function TenantUsersPage() {
     const [showPassword, setShowPassword] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
 
-    // Saved tenants from local storage to provide a quick dropdown
+    // Saved tenants list
     const [savedTenants, setSavedTenants] = useState<Array<{ id: string; name: string }>>([]);
 
     // Provisioned users list
@@ -74,6 +73,7 @@ export default function TenantUsersPage() {
         const queryCid = searchParams.get('clientId');
         if (queryCid) {
             setTargetClientId(queryCid);
+            setIsProvisionModalOpen(true);
         }
 
         if (typeof window !== 'undefined') {
@@ -91,16 +91,26 @@ export default function TenantUsersPage() {
 
     const createClientUserMutation = useCreateClientUserMutation(targetClientId);
 
+    const filteredUsers = useMemo(() => {
+        if (!searchQuery.trim()) return provisionedUsers;
+        const q = searchQuery.toLowerCase();
+        return provisionedUsers.filter(u => 
+            u.username.toLowerCase().includes(q) ||
+            u.clientId.toLowerCase().includes(q) ||
+            (u.email && u.email.toLowerCase().includes(q))
+        );
+    }, [provisionedUsers, searchQuery]);
+
     const handleCreateUser = async (e: React.FormEvent) => {
         e.preventDefault();
         const cid = targetClientId.trim();
         if (!cid) {
-            toast('Please enter or select a Target Tenant Client ID', 'error');
+            toast('Please enter or select a Tenant Client ID', 'error');
             return;
         }
 
         if (!username.trim() || !email.trim() || !password.trim()) {
-            toast('All fields (Username, Email, Password) are required', 'error');
+            toast('All fields are required', 'error');
             return;
         }
 
@@ -133,25 +143,33 @@ export default function TenantUsersPage() {
                 }
             }
 
-            toast(`User '${newUser.username}' successfully registered in tenant!`, 'success');
+            toast(`User '${newUser.username}' provisioned in tenant!`, 'success');
             setUsername('');
             setEmail('');
             setPassword('');
+            setIsProvisionModalOpen(false);
         } catch (err: any) {
-            toast(err.response?.data?.message || err.message || 'Failed to create user in tenant', 'error');
+            toast(err.response?.data?.message || err.message || 'Failed to provision tenant user', 'error');
         } finally {
             setIsSubmitting(false);
         }
     };
 
-    const handleDeactivateUser = async (userId: string) => {
-        if (!confirm('Are you sure you want to deactivate this tenant user account?')) {
+    const handleToggleUserStatus = async (userId: string, currentActive: boolean) => {
+        const actionName = currentActive ? 'deactivate' : 'activate';
+        if (!confirm(`Are you sure you want to ${actionName} this tenant user account?`)) {
             return;
         }
 
         try {
-            await authApi.deactivateUser(userId);
-            const updated = provisionedUsers.map(u => u.id === userId ? { ...u, isActive: false } : u);
+            if (currentActive) {
+                await authApi.deactivateUser(userId);
+                toast('User deactivated successfully', 'info');
+            } else {
+                await authApi.activateUser(userId);
+                toast('User activated successfully', 'success');
+            }
+            const updated = provisionedUsers.map(u => u.id === userId ? { ...u, isActive: !currentActive } : u);
             setProvisionedUsers(updated);
             if (typeof window !== 'undefined') {
                 try {
@@ -160,9 +178,8 @@ export default function TenantUsersPage() {
                     console.error(e);
                 }
             }
-            toast('User deactivated successfully', 'info');
         } catch (err: any) {
-            toast(err.response?.data?.message || err.message || 'Failed to deactivate user', 'error');
+            toast(err.response?.data?.message || err.message || `Failed to ${actionName} user`, 'error');
         }
     };
 
@@ -171,243 +188,243 @@ export default function TenantUsersPage() {
     }
 
     return (
-        <div className="space-y-8 max-w-6xl mx-auto pb-12 animate-in fade-in duration-300">
-            {/* Header */}
-            <div className="border-b border-border-color/30 pb-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div className="space-y-6 max-w-7xl mx-auto pb-12 animate-in fade-in duration-150">
+            {/* Page Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#242932]">
                 <div>
-                    <div className="flex items-center gap-2 mb-1">
-                        <Link href="/dashboard/tenants" className="text-xs text-muted-foreground hover:text-cyan-400 flex items-center gap-1">
+                    <div className="flex items-center gap-1.5 mb-1">
+                        <Link href="/dashboard/tenants" className="text-xs text-zinc-400 hover:text-[#4CB8D6] flex items-center gap-1">
                             <ArrowLeft size={12} />
-                            Back to Tenants
+                            Tenants
                         </Link>
                     </div>
-                    <h1 className="text-3xl font-extrabold tracking-tight text-foreground flex items-center gap-2">
-                        <Users className="text-cyan-400 w-7 h-7" />
-                        Tenant User Provisioning
+                    <h1 className="text-xl font-semibold tracking-tight text-zinc-100">
+                        Tenant Users
                     </h1>
-                    <p className="text-sm text-muted-foreground mt-1">
-                        Create administrative and viewer user accounts inside any tenant organization by Client ID.
+                    <p className="text-xs text-zinc-400 mt-0.5">
+                        Provision administrative and viewer user credentials across tenant organizations.
                     </p>
                 </div>
-                <Badge variant="outline" className="font-mono text-[10px] uppercase border-cyan-500/30 text-cyan-400 bg-cyan-500/5 px-3 py-1 self-start sm:self-auto">
-                    Super Admin Console
-                </Badge>
+
+                <Button
+                    size="sm"
+                    onClick={() => setIsProvisionModalOpen(true)}
+                    className="text-xs h-8 gap-1.5 cursor-pointer bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold self-start sm:self-auto"
+                >
+                    <UserPlus size={14} />
+                    Provision User
+                </Button>
             </div>
 
-            {/* Create Tenant User Form */}
-            <Card className="border-cyan-500/20 bg-glass-card/50 shadow-xl shadow-cyan-500/5">
-                <CardHeader>
-                    <CardTitle className="text-base flex items-center gap-2">
-                        <UserPlus className="text-cyan-400 w-4 h-4" />
-                        Provision User in Tenant
-                    </CardTitle>
-                    <CardDescription className="text-xs">
-                        Specify target Client ID and credentials to grant tenant operator access.
-                    </CardDescription>
-                </CardHeader>
-                <CardContent>
-                    <form onSubmit={handleCreateUser} className="space-y-4">
-                        {/* Target Client ID */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="space-y-1.5">
-                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                    Target Tenant Client ID (UUID) *
-                                </label>
-                                <div className="relative">
-                                    <Input
-                                        value={targetClientId}
-                                        onChange={(e) => setTargetClientId(e.target.value)}
-                                        placeholder="Paste or enter Client ID"
-                                        required
-                                        className="font-mono text-xs pl-8"
-                                    />
-                                    <Building size={13} className="absolute left-2.5 top-3 text-muted-foreground" />
-                                </div>
-                            </div>
+            {/* Flat Toolbar */}
+            <div className="flex items-center justify-between gap-4 text-xs">
+                <div className="relative max-w-sm w-full">
+                    <Search size={13} className="absolute left-2.5 top-2.5 text-zinc-500" />
+                    <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search users by name, email, or tenant ID..."
+                        className="w-full bg-[#111419] border border-[#242932] rounded px-8 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6] transition-colors"
+                    />
+                </div>
 
-                            {savedTenants.length > 0 && (
-                                <div className="space-y-1.5">
-                                    <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                        Or Select From Registered Tenants
-                                    </label>
-                                    <select
-                                        value={targetClientId}
-                                        onChange={(e) => setTargetClientId(e.target.value)}
-                                        className="w-full text-xs bg-input-bg border border-border-color focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none rounded-lg p-2.5 text-foreground h-9"
-                                    >
-                                        <option value="">-- Choose Registered Tenant --</option>
-                                        {savedTenants.map((t) => (
-                                            <option key={t.id} value={t.id}>
-                                                {t.name} ({t.id.substring(0, 8)}...)
-                                            </option>
-                                        ))}
-                                    </select>
-                                </div>
-                            )}
-                        </div>
+                <span className="text-xs text-zinc-500 font-mono">
+                    {filteredUsers.length} {filteredUsers.length === 1 ? 'user' : 'users'}
+                </span>
+            </div>
 
-                        {/* User Credentials */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div className="space-y-1.5">
-                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                    Operator Username *
-                                </label>
-                                <Input
-                                    value={username}
-                                    onChange={(e) => setUsername(e.target.value)}
-                                    placeholder="e.g. acme_operator"
-                                    required
-                                    className="text-xs"
-                                />
-                            </div>
-
-                            <div className="space-y-1.5">
-                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                    Operator Email Address *
-                                </label>
-                                <div className="relative">
-                                    <Input
-                                        type="email"
-                                        value={email}
-                                        onChange={(e) => setEmail(e.target.value)}
-                                        placeholder="operator@acme.com"
-                                        required
-                                        className="text-xs pl-8"
-                                    />
-                                    <Mail size={13} className="absolute left-2.5 top-3 text-muted-foreground" />
-                                </div>
-                            </div>
-
-                            <div className="space-y-1.5">
-                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                    Initial Password *
-                                </label>
-                                <div className="relative">
-                                    <Input
-                                        type={showPassword ? "text" : "password"}
-                                        value={password}
-                                        onChange={(e) => setPassword(e.target.value)}
-                                        placeholder="Min. 8 characters"
-                                        required
-                                        className="text-xs pl-8 pr-10"
-                                    />
-                                    <Lock size={13} className="absolute left-2.5 top-3 text-muted-foreground" />
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowPassword(!showPassword)}
-                                        className="absolute inset-y-0 right-0 pr-3 flex items-center text-muted-foreground hover:text-foreground cursor-pointer"
-                                    >
-                                        {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Role selection */}
-                        <div className="space-y-1.5 max-w-sm">
-                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                Role Permission Access
-                            </label>
-                            <select
-                                value={role}
-                                onChange={(e) => setRole(e.target.value as 'client_admin' | 'client_viewer')}
-                                className="w-full text-xs bg-input-bg border border-border-color focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none rounded-lg p-2.5 text-foreground h-9"
+            {/* Dense Flat Data Table */}
+            <div className="surface-panel overflow-hidden">
+                {filteredUsers.length === 0 ? (
+                    <div className="text-center py-12 p-6">
+                        <Users className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+                        <p className="text-xs font-semibold text-zinc-300">No Users Provisioned Yet</p>
+                        <p className="text-[11px] text-zinc-500 max-w-xs mx-auto mt-0.5">
+                            Provision an operator or admin user inside any registered client tenant.
+                        </p>
+                        {!searchQuery && (
+                            <Button
+                                size="sm"
+                                onClick={() => setIsProvisionModalOpen(true)}
+                                className="mt-3 text-xs h-7 gap-1 cursor-pointer bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold"
                             >
-                                <option value="client_admin">Client Admin (Manage API Keys, Users & Analytics)</option>
-                                <option value="client_viewer">Client Viewer (Read-only Telemetry Analytics)</option>
+                                <UserPlus size={12} />
+                                Provision User
+                            </Button>
+                        )}
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                            <thead>
+                                <tr className="border-b border-[#242932] text-zinc-400 text-[11px] uppercase tracking-wider bg-[#0E1014]/60 select-none">
+                                    <th className="py-2.5 px-4 font-semibold w-24">Status</th>
+                                    <th className="py-2.5 px-4 font-semibold">User</th>
+                                    <th className="py-2.5 px-4 font-semibold">Tenant Client ID</th>
+                                    <th className="py-2.5 px-4 font-semibold">Email</th>
+                                    <th className="py-2.5 px-4 font-semibold">Role</th>
+                                    <th className="py-2.5 px-4 font-semibold text-right w-28">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[#242932]">
+                                {filteredUsers.map((u) => (
+                                    <tr key={u.id} className="hover:bg-[#181D24] transition-colors">
+                                        <td className="py-3 px-4 whitespace-nowrap">
+                                            <StatusBadge status={u.isActive ? 'healthy' : 'offline'} label={u.isActive ? 'Active' : 'Disabled'} />
+                                        </td>
+                                        <td className="py-3 px-4 font-medium text-zinc-200 whitespace-nowrap">
+                                            {u.username}
+                                        </td>
+                                        <td className="py-3 px-4 font-mono text-zinc-400 whitespace-nowrap">
+                                            {u.clientId.substring(0, 10)}...
+                                        </td>
+                                        <td className="py-3 px-4 text-zinc-400 whitespace-nowrap">
+                                            {u.email || '—'}
+                                        </td>
+                                        <td className="py-3 px-4 whitespace-nowrap">
+                                            <span className="text-[10px] font-mono uppercase bg-[#181D24] text-zinc-300 px-1.5 py-0.5 rounded border border-[#242932]">
+                                                {u.role.replace('_', ' ')}
+                                            </span>
+                                        </td>
+                                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => handleToggleUserStatus(u.id, !!u.isActive)}
+                                                className={`h-7 px-2 text-xs cursor-pointer ${
+                                                    u.isActive
+                                                        ? "text-[#E45865] hover:bg-[#E45865]/10 hover:border-[#E45865]/30"
+                                                        : "text-[#48B982] hover:bg-[#48B982]/10 hover:border-[#48B982]/30"
+                                                }`}
+                                            >
+                                                {u.isActive ? <UserMinus size={12} /> : <UserCheck size={12} />}
+                                                {u.isActive ? 'Deactivate' : 'Activate'}
+                                            </Button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+
+            {/* Provision User Modal */}
+            <Modal
+                isOpen={isProvisionModalOpen}
+                onClose={() => setIsProvisionModalOpen(false)}
+                title="Provision Tenant User"
+                description="Assign credentials and access permissions to a tenant organization."
+                maxWidth="max-w-md"
+            >
+                <form onSubmit={handleCreateUser} className="space-y-4">
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block">Target Client ID *</label>
+                        <input
+                            type="text"
+                            value={targetClientId}
+                            onChange={(e) => setTargetClientId(e.target.value)}
+                            placeholder="Enter tenant UUID"
+                            required
+                            className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-[#4CB8D6]"
+                        />
+                    </div>
+
+                    {savedTenants.length > 0 && (
+                        <div className="space-y-1">
+                            <label className="text-[11px] text-zinc-400 block">Or select from registered tenants</label>
+                            <select
+                                value={targetClientId}
+                                onChange={(e) => setTargetClientId(e.target.value)}
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                            >
+                                <option value="">-- Select Tenant --</option>
+                                {savedTenants.map((t) => (
+                                    <option key={t.id} value={t.id}>{t.name} ({t.id.substring(0, 8)}...)</option>
+                                ))}
                             </select>
                         </div>
-
-                        <div className="flex justify-end pt-2">
-                            <Button
-                                type="submit"
-                                className="text-xs h-9 gap-1.5 cursor-pointer px-5"
-                                isLoading={isSubmitting}
-                            >
-                                <UserPlus size={14} />
-                                Register User in Tenant
-                            </Button>
-                        </div>
-                    </form>
-                </CardContent>
-            </Card>
-
-            {/* Provisioned Users Table */}
-            <Card>
-                <CardHeader className="pb-3 border-b border-border-color/20">
-                    <CardTitle className="text-base flex items-center gap-2">
-                        <Shield className="text-cyan-400 w-4 h-4" />
-                        Registered Tenant Users
-                    </CardTitle>
-                    <CardDescription className="text-xs">
-                        Review users provisioned into tenant organizations across your infrastructure.
-                    </CardDescription>
-                </CardHeader>
-                <CardContent className="p-0">
-                    {provisionedUsers.length === 0 ? (
-                        <div className="text-center py-12 flex flex-col items-center justify-center p-6">
-                            <Users className="w-10 h-10 text-muted-foreground/30 mb-2.5" />
-                            <p className="text-sm font-semibold text-foreground">No Users Provisioned Yet</p>
-                            <p className="text-xs text-muted-foreground max-w-[320px] mt-1">
-                                Use the form above to register an administrative or viewer user in a tenant.
-                            </p>
-                        </div>
-                    ) : (
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Username</TableHead>
-                                    <TableHead>Tenant ID</TableHead>
-                                    <TableHead>Email</TableHead>
-                                    <TableHead>Role</TableHead>
-                                    <TableHead>Status</TableHead>
-                                    <TableHead className="text-right">Action</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {provisionedUsers.map((u) => (
-                                    <TableRow key={u.id}>
-                                        <TableCell className="font-semibold text-sm">
-                                            {u.username}
-                                        </TableCell>
-                                        <TableCell>
-                                            <code className="text-xs font-mono bg-zinc-900 text-zinc-300 px-2 py-1 rounded border border-border-color">
-                                                {u.clientId.substring(0, 10)}...
-                                            </code>
-                                        </TableCell>
-                                        <TableCell className="text-xs text-muted-foreground">
-                                            {u.email || 'N/A'}
-                                        </TableCell>
-                                        <TableCell>
-                                            <Badge variant="outline" className="text-[10px] uppercase font-mono">
-                                                {u.role.replace('_', ' ')}
-                                            </Badge>
-                                        </TableCell>
-                                        <TableCell>
-                                            <Badge variant={u.isActive ? "success" : "destructive"}>
-                                                {u.isActive ? "Active" : "Deactivated"}
-                                            </Badge>
-                                        </TableCell>
-                                        <TableCell className="text-right">
-                                            {u.isActive && (
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onClick={() => handleDeactivateUser(u.id)}
-                                                    className="border-rose-500/20 text-rose-400 hover:bg-rose-500/10 h-7 text-xs gap-1 cursor-pointer"
-                                                >
-                                                    <UserMinus size={12} />
-                                                    Deactivate
-                                                </Button>
-                                            )}
-                                        </TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
                     )}
-                </CardContent>
-            </Card>
+
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block">Username *</label>
+                        <input
+                            type="text"
+                            value={username}
+                            onChange={(e) => setUsername(e.target.value)}
+                            placeholder="e.g. acme_admin"
+                            required
+                            className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                        />
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block">Email Address *</label>
+                        <input
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            placeholder="admin@acme.com"
+                            required
+                            className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                        />
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block">Initial Password *</label>
+                        <div className="relative">
+                            <input
+                                type={showPassword ? "text" : "password"}
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                placeholder="Min. 8 characters"
+                                required
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 pr-8 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => setShowPassword(!showPassword)}
+                                className="absolute right-2.5 top-2 text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                            >
+                                {showPassword ? <EyeOff size={13} /> : <Eye size={13} />}
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block">Role Access</label>
+                        <select
+                            value={role}
+                            onChange={(e: any) => setRole(e.target.value)}
+                            className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                        >
+                            <option value="client_admin">Client Admin</option>
+                            <option value="client_viewer">Client Viewer</option>
+                        </select>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 pt-4 border-t border-[#242932]">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setIsProvisionModalOpen(false)}
+                            className="text-xs h-8 cursor-pointer"
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            type="submit"
+                            size="sm"
+                            isLoading={isSubmitting}
+                            className="text-xs h-8 bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold cursor-pointer"
+                        >
+                            Provision User
+                        </Button>
+                    </div>
+                </form>
+            </Modal>
         </div>
     );
 }

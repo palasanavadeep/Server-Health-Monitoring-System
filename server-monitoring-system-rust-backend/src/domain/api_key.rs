@@ -95,6 +95,40 @@ impl ApiKey {
             None => false,
         }
     }
+
+    /// Mask the sensitive key value for safe serialization in read/list API responses.
+    /// Example: `sm_key_77e7a9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7`
+    ///       -> `sm_key_77e7******************************e6f7`
+    pub fn mask_key_value(&self) -> String {
+        Self::mask_str(&self.key_value)
+    }
+
+    /// Format a raw key string into a masked representation.
+    pub fn mask_str(key: &str) -> String {
+        if let Some(prefix_rest) = key.strip_prefix("sm_key_") {
+            if prefix_rest.len() >= 8 {
+                let first4 = &prefix_rest[..4];
+                let last4 = &prefix_rest[prefix_rest.len() - 4..];
+                let mask_len = prefix_rest.len().saturating_sub(8);
+                return format!("sm_key_{}{}{}", first4, "*".repeat(mask_len), last4);
+            }
+        }
+
+        if key.len() > 8 {
+            let start = &key[..4];
+            let end = &key[key.len() - 4..];
+            let mask_len = key.len().saturating_sub(8);
+            format!("{}{}{}", start, "*".repeat(mask_len), end)
+        } else {
+            "sm_key_********************".to_string()
+        }
+    }
+
+    /// Return a clone of this ApiKey with the key_value masked.
+    pub fn to_masked(mut self) -> Self {
+        self.key_value = self.mask_key_value();
+        self
+    }
 }
 
 /// API key joined with its owning client data.

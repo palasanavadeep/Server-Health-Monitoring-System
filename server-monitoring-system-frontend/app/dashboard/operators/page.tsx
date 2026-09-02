@@ -1,29 +1,29 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { notFound } from 'next/navigation';
 import { useAuth } from '@/contexts/auth-context';
-import { useCreateClientUserMutation } from '@/hooks/use-client-queries';
+import { useCreateClientUserMutation, useClientUsersQuery } from '@/hooks/use-client-queries';
 import { authApi } from '@/lib/api';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Input } from '@/components/ui/input';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/contexts/toast-context';
 import { 
     Users, 
     UserPlus, 
+    Search, 
+    ChevronDown, 
+    UserMinus, 
+    UserCheck,
     Mail, 
     Lock, 
     Eye, 
     EyeOff, 
     Shield, 
-    UserMinus, 
-    Building, 
-    UserCheck,
-    CheckCircle2
+    Check
 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface ClientOperator {
     id: string;
@@ -44,9 +44,17 @@ export default function OperatorsPage() {
     }
 
     const clientId = user?.clientId || '';
+    const { data: serverUsers = [], isLoading: loadingUsers, refetch } = useClientUsersQuery(clientId);
     const createClientUserMutation = useCreateClientUserMutation(clientId);
 
-    // Form inputs
+    // Modal state
+    const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+
+    // Search and filters
+    const [searchQuery, setSearchQuery] = useState('');
+    const [roleFilter, setRoleFilter] = useState('ALL');
+
+    // Invite form state
     const [username, setUsername] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
@@ -54,44 +62,25 @@ export default function OperatorsPage() {
     const [showPassword, setShowPassword] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
 
-    // Local storage of registered operators for this client
-    const [operators, setOperators] = useState<ClientOperator[]>(() => {
-        if (typeof window !== 'undefined') {
-            try {
-                const storageKey = `sm_operators_${clientId || 'default'}`;
-                const saved = localStorage.getItem(storageKey);
-                return saved ? JSON.parse(saved) : [];
-            } catch {
-                return [];
-            }
-        }
-        return [];
-    });
+    const filteredOperators = useMemo(() => {
+        return serverUsers.filter(op => {
+            const matchesSearch = !searchQuery.trim() || 
+                op.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                (op.email && op.email.toLowerCase().includes(searchQuery.toLowerCase()));
+            const matchesRole = roleFilter === 'ALL' || op.role === roleFilter;
+            return matchesSearch && matchesRole;
+        });
+    }, [serverUsers, searchQuery, roleFilter]);
 
-    // Update storage key when clientId loads
-    useEffect(() => {
-        if (clientId && typeof window !== 'undefined') {
-            try {
-                const storageKey = `sm_operators_${clientId}`;
-                const saved = localStorage.getItem(storageKey);
-                if (saved) {
-                    setOperators(JSON.parse(saved));
-                }
-            } catch (e) {
-                console.error(e);
-            }
-        }
-    }, [clientId]);
-
-    const handleOnboardOperator = async (e: React.FormEvent) => {
+    const handleInviteOperator = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!clientId) {
-            toast('No active client association found for this account', 'error');
+            toast('No active workspace association found', 'error');
             return;
         }
 
         if (!username.trim() || !email.trim() || !password.trim()) {
-            toast('Username, email, and password are required', 'error');
+            toast('Please fill in all required fields', 'error');
             return;
         }
 
@@ -104,256 +93,281 @@ export default function OperatorsPage() {
                 role,
             });
 
-            const newOperator: ClientOperator = {
-                id: res.id,
-                username: res.username || username.trim(),
-                email: res.email || email.trim(),
-                role: res.role || role,
-                isActive: true,
-                createdAt: new Date().toISOString(),
-            };
-
-            const updated = [newOperator, ...operators];
-            setOperators(updated);
-            if (typeof window !== 'undefined' && clientId) {
-                try {
-                    localStorage.setItem(`sm_operators_${clientId}`, JSON.stringify(updated));
-                } catch (e) {
-                    console.error(e);
-                }
-            }
-
-            toast(`Operator '${newOperator.username}' onboarded successfully!`, 'success');
+            toast(`Operator '${res.username || username.trim()}' registered successfully!`, 'success');
             setUsername('');
             setEmail('');
             setPassword('');
             setRole('client_viewer');
+            setIsInviteModalOpen(false);
+            refetch();
         } catch (err: any) {
-            toast(err.response?.data?.message || err.message || 'Failed to onboard operator user', 'error');
+            toast(err.response?.data?.message || err.message || 'Failed to register operator', 'error');
         } finally {
             setIsSubmitting(false);
         }
     };
 
-    const handleDeactivateOperator = async (operatorId: string) => {
-        if (!confirm('Are you sure you want to deactivate this operator user?')) {
+    const handleToggleUserStatus = async (operatorId: string, currentActive: boolean) => {
+        const actionName = currentActive ? 'deactivate' : 'activate';
+        if (!confirm(`Are you sure you want to ${actionName} this operator account?`)) {
             return;
         }
 
         try {
-            await authApi.deactivateUser(operatorId);
-            const updated = operators.map(op => op.id === operatorId ? { ...op, isActive: false } : op);
-            setOperators(updated);
-            if (typeof window !== 'undefined' && clientId) {
-                try {
-                    localStorage.setItem(`sm_operators_${clientId}`, JSON.stringify(updated));
-                } catch (e) {
-                    console.error(e);
-                }
+            if (currentActive) {
+                await authApi.deactivateUser(operatorId);
+                toast('Operator account deactivated', 'info');
+            } else {
+                await authApi.activateUser(operatorId);
+                toast('Operator account activated', 'success');
             }
-            toast('Operator account deactivated successfully', 'info');
+            refetch();
         } catch (err: any) {
-            toast(err.response?.data?.message || err.message || 'Failed to deactivate operator user', 'error');
+            toast(err.response?.data?.message || err.message || `Failed to ${actionName} operator`, 'error');
         }
     };
 
-    if (loading || (user && (user.role === 'super_admin' || user.role === 'client_viewer'))) {
+    if (loading || (user && user.role !== 'client_admin')) {
         return null;
     }
 
     return (
-        <div className="space-y-8 max-w-6xl mx-auto pb-12 animate-in fade-in duration-300">
-            {/* Header */}
-            <div className="border-b border-border-color/30 pb-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div className="space-y-6 max-w-7xl mx-auto pb-12 animate-in fade-in duration-150">
+            {/* Page Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#242932]">
                 <div>
-                    <h1 className="text-3xl font-extrabold tracking-tight text-foreground flex items-center gap-2">
-                        <Users className="text-cyan-400 w-7 h-7" />
-                        Operator User Management
+                    <h1 className="text-xl font-semibold tracking-tight text-zinc-100">
+                        Operators
                     </h1>
-                    <p className="text-sm text-muted-foreground mt-1">
-                        Register and provision operator accounts for your organization to access monitoring streams.
+                    <p className="text-xs text-zinc-400 mt-0.5">
+                        Manage team members and configure role-based access for this workspace.
                     </p>
                 </div>
-                <div className="flex items-center gap-2">
-                    <Badge variant="outline" className="font-mono text-[10px] uppercase border-border-color bg-zinc-950/20 text-muted-foreground">
-                        Tenant: {user?.clientId || 'N/A'}
-                    </Badge>
-                </div>
+
+                <Button
+                    size="sm"
+                    onClick={() => setIsInviteModalOpen(true)}
+                    className="text-xs h-8 gap-1.5 cursor-pointer bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold self-start sm:self-auto"
+                >
+                    <UserPlus size={14} />
+                    Invite Operator
+                </Button>
             </div>
 
-            {/* Onboard Operator User Form */}
-            <Card className="border-cyan-500/20 bg-glass-card/50 shadow-xl shadow-cyan-500/5">
-                <CardHeader>
-                    <CardTitle className="text-base flex items-center gap-2">
-                        <UserPlus className="text-cyan-400 w-4 h-4" />
-                        Register New Operator User
-                    </CardTitle>
-                    <CardDescription className="text-xs">
-                        Configure user login credentials and assign administrative or read-only roles.
-                    </CardDescription>
-                </CardHeader>
-                <CardContent>
-                    <form onSubmit={handleOnboardOperator} className="space-y-4 max-w-2xl">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="space-y-1.5">
-                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                    Username *
-                                </label>
-                                <Input
-                                    value={username}
-                                    onChange={(e) => setUsername(e.target.value)}
-                                    placeholder="e.g. dev_operator"
-                                    required
-                                    className="text-xs"
-                                />
-                            </div>
+            {/* Flat Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-4 text-xs">
+                <div className="flex items-center gap-3 flex-1 max-w-md">
+                    <div className="relative flex-1">
+                        <Search size={13} className="absolute left-2.5 top-2.5 text-zinc-500" />
+                        <input
+                            type="text"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Filter operators by name or email..."
+                            className="w-full bg-[#111419] border border-[#242932] rounded px-8 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6] transition-colors"
+                        />
+                    </div>
 
-                            <div className="space-y-1.5">
-                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                    Email Address *
-                                </label>
-                                <div className="relative">
-                                    <Input
-                                        type="email"
-                                        value={email}
-                                        onChange={(e) => setEmail(e.target.value)}
-                                        placeholder="operator@company.com"
-                                        required
-                                        className="text-xs pl-8"
-                                    />
-                                    <Mail size={13} className="absolute left-2.5 top-3 text-muted-foreground" />
-                                </div>
-                            </div>
-                        </div>
+                    <div className="relative">
+                        <select
+                            value={roleFilter}
+                            onChange={(e) => setRoleFilter(e.target.value)}
+                            className="bg-[#111419] border border-[#242932] text-xs font-medium text-zinc-300 rounded px-2.5 py-1.5 pr-6 appearance-none outline-none hover:border-[#323946] focus:border-[#4CB8D6] transition-colors cursor-pointer select-none"
+                        >
+                            <option value="ALL">Role: All</option>
+                            <option value="client_admin">Admin</option>
+                            <option value="client_viewer">Viewer</option>
+                        </select>
+                        <ChevronDown size={12} className="absolute right-2 top-2.5 text-zinc-400 pointer-events-none" />
+                    </div>
+                </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="space-y-1.5">
-                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                    Default Password *
-                                </label>
-                                <div className="relative">
-                                    <Input
-                                        type={showPassword ? "text" : "password"}
-                                        value={password}
-                                        onChange={(e) => setPassword(e.target.value)}
-                                        placeholder="Min. 8 characters"
-                                        required
-                                        className="text-xs pl-8 pr-10"
-                                    />
-                                    <Lock size={13} className="absolute left-2.5 top-3 text-muted-foreground" />
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowPassword(!showPassword)}
-                                        className="absolute inset-y-0 right-0 pr-3 flex items-center text-muted-foreground hover:text-foreground cursor-pointer"
-                                    >
-                                        {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-                                    </button>
-                                </div>
-                            </div>
+                <span className="text-xs text-zinc-500 font-mono">
+                    {filteredOperators.length} {filteredOperators.length === 1 ? 'user' : 'users'}
+                </span>
+            </div>
 
-                            <div className="space-y-1.5">
-                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                    Operator Role Access
-                                </label>
-                                <select
-                                    value={role}
-                                    onChange={(e) => setRole(e.target.value as 'client_admin' | 'client_viewer')}
-                                    className="w-full text-xs bg-input-bg border border-border-color focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none rounded-lg p-2.5 text-foreground h-9"
-                                >
-                                    <option value="client_viewer">Client Viewer (Read-only Analytics)</option>
-                                    <option value="client_admin">Client Admin (Manage API Keys, Users & Analytics)</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div className="flex justify-end pt-2">
+            {/* Dense Flat Data Table */}
+            <div className="surface-panel overflow-hidden">
+                {filteredOperators.length === 0 ? (
+                    <div className="text-center py-12 p-6">
+                        <Users className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+                        <p className="text-xs font-semibold text-zinc-300">No Operators Registered Yet</p>
+                        <p className="text-[11px] text-zinc-500 max-w-xs mx-auto mt-0.5">
+                            {searchQuery ? "No operators matched your search filter." : "Invite team members to collaborate and monitor telemetry streams."}
+                        </p>
+                        {!searchQuery && (
                             <Button 
-                                type="submit" 
-                                className="text-xs h-9 gap-1.5 cursor-pointer px-5" 
-                                isLoading={isSubmitting}
+                                size="sm" 
+                                onClick={() => setIsInviteModalOpen(true)}
+                                className="mt-3 text-xs h-7 gap-1 cursor-pointer bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold"
                             >
-                                <UserPlus size={14} />
-                                Register Operator
+                                <UserPlus size={12} />
+                                Invite Operator
                             </Button>
-                        </div>
-                    </form>
-                </CardContent>
-            </Card>
+                        )}
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                            <thead>
+                                <tr className="border-b border-[#242932] text-zinc-400 text-[11px] uppercase tracking-wider bg-[#0E1014]/60 select-none">
+                                    <th className="py-2.5 px-4 font-semibold w-24">Status</th>
+                                    <th className="py-2.5 px-4 font-semibold">Operator</th>
+                                    <th className="py-2.5 px-4 font-semibold">Email</th>
+                                    <th className="py-2.5 px-4 font-semibold">Role</th>
+                                    <th className="py-2.5 px-4 font-semibold">Registered</th>
+                                    <th className="py-2.5 px-4 font-semibold text-right w-28">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[#242932]">
+                                {filteredOperators.map((op, idx) => {
+                                    const isCurrentUser = user?.id === op.id;
+                                    const isAdmin = user?.role === 'client_admin' || user?.role === 'super_admin';
+                                    const canToggle = isAdmin || isCurrentUser;
 
-            {/* Registered Operators List Table */}
-            <Card>
-                <CardHeader className="pb-3 border-b border-border-color/20">
-                    <CardTitle className="text-base flex items-center gap-2">
-                        <UserCheck className="text-emerald-400 w-4 h-4" />
-                        Registered Operators
-                    </CardTitle>
-                    <CardDescription className="text-xs">
-                        Review active operators with credentials to log into this tenant organization.
-                    </CardDescription>
-                </CardHeader>
-                <CardContent className="p-0">
-                    {operators.length === 0 ? (
-                        <div className="text-center py-12 flex flex-col items-center justify-center p-6">
-                            <Users className="w-10 h-10 text-muted-foreground/30 mb-2.5" />
-                            <p className="text-sm font-semibold text-foreground">No Operators Registered Yet</p>
-                            <p className="text-xs text-muted-foreground max-w-[300px] mt-1">
-                                Use the form above to onboard team members and assign operator roles.
-                            </p>
+                                    return (
+                                        <tr key={op.id || idx} className="hover:bg-[#181D24] transition-colors">
+                                            <td className="py-3 px-4 whitespace-nowrap">
+                                                <StatusBadge status={op.isActive ? 'healthy' : 'offline'} label={op.isActive ? 'Active' : 'Disabled'} />
+                                            </td>
+                                            <td className="py-3 px-4 font-medium text-zinc-200 whitespace-nowrap">
+                                                <span>{op.username}</span>
+                                                {isCurrentUser && (
+                                                    <span className="ml-1.5 text-[9px] font-mono text-[#4CB8D6] bg-[#4CB8D6]/10 px-1 py-0.2 rounded border border-[#4CB8D6]/20">
+                                                        You
+                                                    </span>
+                                                )}
+                                            </td>
+                                            <td className="py-3 px-4 text-zinc-400 whitespace-nowrap">
+                                                {op.email || '—'}
+                                            </td>
+                                            <td className="py-3 px-4 whitespace-nowrap">
+                                                <span className="text-[10px] font-mono uppercase bg-[#181D24] text-zinc-300 px-1.5 py-0.5 rounded border border-[#242932]">
+                                                    {op.role === 'client_admin' ? 'Admin' : 'Viewer'}
+                                                </span>
+                                            </td>
+                                            <td className="py-3 px-4 text-zinc-500 whitespace-nowrap font-mono text-[11px]">
+                                                {op.createdAt ? new Date(op.createdAt).toLocaleDateString() : '—'}
+                                            </td>
+                                            <td className="py-3 px-4 text-right whitespace-nowrap">
+                                                {canToggle ? (
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        onClick={() => handleToggleUserStatus(op.id, !!op.isActive)}
+                                                        className={cn(
+                                                            "h-7 px-2 text-xs cursor-pointer",
+                                                            op.isActive
+                                                                ? "text-[#E45865] hover:bg-[#E45865]/10 hover:border-[#E45865]/30"
+                                                                : "text-[#48B982] hover:bg-[#48B982]/10 hover:border-[#48B982]/30"
+                                                        )}
+                                                    >
+                                                        {op.isActive ? <UserMinus size={12} /> : <UserCheck size={12} />}
+                                                        {op.isActive ? 'Deactivate' : 'Activate'}
+                                                    </Button>
+                                                ) : (
+                                                    <span className="text-[10px] text-zinc-600 font-mono">
+                                                        {op.isActive ? 'Active' : 'Disabled'}
+                                                    </span>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+
+            {/* Invite Operator Modal */}
+            <Modal
+                isOpen={isInviteModalOpen}
+                onClose={() => setIsInviteModalOpen(false)}
+                title="Invite Operator"
+                description="Create credentials and assign an administrative or read-only role."
+                maxWidth="max-w-md"
+            >
+                <form onSubmit={handleInviteOperator} className="space-y-4">
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block">Username *</label>
+                        <input
+                            type="text"
+                            value={username}
+                            onChange={(e) => setUsername(e.target.value)}
+                            placeholder="e.g. alex_dev"
+                            required
+                            className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                        />
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block">Email Address *</label>
+                        <input
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            placeholder="alex@company.com"
+                            required
+                            className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                        />
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block">Password *</label>
+                        <div className="relative">
+                            <input
+                                type={showPassword ? "text" : "password"}
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                placeholder="Min. 8 characters"
+                                required
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 pr-8 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => setShowPassword(!showPassword)}
+                                className="absolute right-2.5 top-2 text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                            >
+                                {showPassword ? <EyeOff size={13} /> : <Eye size={13} />}
+                            </button>
                         </div>
-                    ) : (
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Username</TableHead>
-                                    <TableHead>Email Address</TableHead>
-                                    <TableHead>Access Role</TableHead>
-                                    <TableHead>Registered</TableHead>
-                                    <TableHead>Status</TableHead>
-                                    <TableHead className="text-right">Action</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {operators.map((op) => (
-                                    <TableRow key={op.id}>
-                                        <TableCell className="font-semibold text-sm">
-                                            {op.username}
-                                        </TableCell>
-                                        <TableCell className="text-xs text-muted-foreground">
-                                            {op.email || 'N/A'}
-                                        </TableCell>
-                                        <TableCell>
-                                            <Badge variant="outline" className="text-[10px] uppercase font-mono">
-                                                {op.role.replace('_', ' ')}
-                                            </Badge>
-                                        </TableCell>
-                                        <TableCell className="text-xs text-muted-foreground">
-                                            {new Date(op.createdAt).toLocaleDateString()}
-                                        </TableCell>
-                                        <TableCell>
-                                            <Badge variant={op.isActive ? "success" : "destructive"}>
-                                                {op.isActive ? "Active" : "Deactivated"}
-                                            </Badge>
-                                        </TableCell>
-                                        <TableCell className="text-right">
-                                            {op.isActive && (
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onClick={() => handleDeactivateOperator(op.id)}
-                                                    className="border-rose-500/20 text-rose-400 hover:bg-rose-500/10 h-7 text-xs gap-1 cursor-pointer"
-                                                >
-                                                    <UserMinus size={12} />
-                                                    Deactivate
-                                                </Button>
-                                            )}
-                                        </TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    )}
-                </CardContent>
-            </Card>
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="text-xs text-zinc-300 block">Role Access</label>
+                        <select
+                            value={role}
+                            onChange={(e: any) => setRole(e.target.value)}
+                            className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                        >
+                            <option value="client_viewer">Viewer (Read-only Analytics)</option>
+                            <option value="client_admin">Admin (Manage API Keys, Users & Analytics)</option>
+                        </select>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 pt-4 border-t border-[#242932]">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setIsInviteModalOpen(false)}
+                            className="text-xs h-8 cursor-pointer"
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            type="submit"
+                            size="sm"
+                            isLoading={isSubmitting}
+                            className="text-xs h-8 bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold cursor-pointer"
+                        >
+                            Invite Operator
+                        </Button>
+                    </div>
+                </form>
+            </Modal>
         </div>
     );
 }
