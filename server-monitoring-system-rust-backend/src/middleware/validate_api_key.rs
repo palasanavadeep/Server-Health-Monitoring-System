@@ -65,6 +65,16 @@ pub async fn validate_api_key(
         }
     };
 
+    // Check if API key has expired
+    if api_key.is_expired() {
+        tracing::warn!("Expired API key attempted access: {}", api_key.key_id);
+        return Err(HttpResponse::Unauthorized().json(ResponseFormatter::error(
+            "API key expired",
+            401,
+            None,
+        )));
+    }
+
     // Check if client is active
     if !client.is_active {
         return Err(HttpResponse::Forbidden().json(ResponseFormatter::error(

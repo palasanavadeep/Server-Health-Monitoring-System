@@ -349,12 +349,7 @@ impl ClientService {
             .await?;
 
         match result {
-            Some((key, client)) => {
-                if key.is_expired() {
-                    return Ok(None);
-                }
-                Ok(Some((client, key)))
-            }
+            Some((key, client)) => Ok(Some((client, key))),
             None => Ok(None),
         }
     }

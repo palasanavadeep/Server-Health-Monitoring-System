@@ -141,3 +141,49 @@ pub struct ApiKeyWithClient {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client: Option<super::client::Client>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    fn sample_api_key(expires_at: Option<DateTime<Utc>>) -> ApiKey {
+        ApiKey {
+            id: None,
+            key_id: "test_key_1".to_string(),
+            key_value: "sm_key_1234567890abcdef1234".to_string(),
+            client_id: "client_1".to_string(),
+            name: "Test Key".to_string(),
+            description: None,
+            environment: "development".to_string(),
+            permissions: ApiKeyPermissions::default(),
+            security: ApiKeySecurity::default(),
+            is_active: true,
+            created_by: None,
+            expires_at,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_api_key_not_expired_when_expires_at_is_none() {
+        let key = sample_api_key(None);
+        assert!(!key.is_expired());
+    }
+
+    #[test]
+    fn test_api_key_not_expired_when_expires_at_in_future() {
+        let future_time = Utc::now() + Duration::hours(24);
+        let key = sample_api_key(Some(future_time));
+        assert!(!key.is_expired());
+    }
+
+    #[test]
+    fn test_api_key_is_expired_when_expires_at_in_past() {
+        let past_time = Utc::now() - Duration::hours(1);
+        let key = sample_api_key(Some(past_time));
+        assert!(key.is_expired());
+    }
+}
+
