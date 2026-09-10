@@ -63,6 +63,22 @@ pub async fn create_client(
     }
 }
 
+/// GET /api/admin/clients
+pub async fn get_all_clients(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+) -> HttpResponse {
+    let user = require_user!(&req);
+
+    match state.client_service.get_all_clients(&user.role).await {
+        Ok(clients) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            clients,
+            "Clients fetched successfully",
+        )),
+        Err(e) => e.to_response(),
+    }
+}
+
 /// POST /api/admin/clients/{clientId}/users
 pub async fn create_client_user(
     state: web::Data<AppState>,

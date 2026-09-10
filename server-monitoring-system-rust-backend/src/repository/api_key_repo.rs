@@ -238,6 +238,12 @@ impl ApiKeyRepository for MongoApiKeyRepository {
         if let Some(name) = update_data.name {
             set_doc.insert("name", name);
         }
+        if let Some(desc) = update_data.description {
+            set_doc.insert("description", desc);
+        }
+        if let Some(env) = update_data.environment {
+            set_doc.insert("environment", env);
+        }
         if let Some(key_value) = update_data.key_value {
             set_doc.insert("keyValue", key_value);
         }
@@ -261,6 +267,15 @@ impl ApiKeyRepository for MongoApiKeyRepository {
                 "security.lastRotated",
                 bson::DateTime::from_chrono(rotated_at),
             );
+        }
+        if let Some(warn_days) = update_data.rotation_warning_days {
+            set_doc.insert("security.rotationWarningDays", warn_days);
+        }
+        if let Some(expires) = update_data.expires_at {
+            match expires {
+                Some(exp) => set_doc.insert("expiresAt", bson::DateTime::from_chrono(exp)),
+                None => set_doc.insert("expiresAt", bson::Bson::Null),
+            };
         }
         set_doc.insert("updatedAt", bson::DateTime::now());
 

@@ -141,6 +141,14 @@ impl ClientService {
         self.client_repository.create(client).await
     }
 
+    /// Retrieve all client organizations (super_admin only).
+    pub async fn get_all_clients(&self, user_role: &str) -> Result<Vec<Client>, AppError> {
+        if user_role != Role::SuperAdmin.as_str() {
+            return Err(AppError::forbidden("Access denied: Super admin access required"));
+        }
+        self.client_repository.find_all().await
+    }
+
     /// Create a user scoped to a client organization.
     pub async fn create_client_user(
         &self,
@@ -272,14 +280,29 @@ impl ClientService {
             req.allowed_origins
         };
 
+        let expires_at = if let Some(mins) = req.expires_in_minutes {
+            if mins >= 5256000 {
+                None
+            } else {
+                Some(Utc::now() + chrono::Duration::minutes(mins))
+            }
+        } else if let Some(dt) = req.expires_at {
+            Some(dt)
+        } else {
+            Some(Utc::now() + chrono::Duration::days(30))
+        };
+
+        let rotation_warning_days = req.rotation_warning_days.unwrap_or(30);
+        let environment = req.environment.unwrap_or_else(|| "production".to_string());
+
         let api_key = ApiKey {
             id: None,
             key_id: Uuid::new_v4().to_string(),
             key_value: Self::generate_api_key(),
             client_id: client_id.to_string(),
             name: req.name,
-            description: None,
-            environment: "production".to_string(),
+            description: req.description,
+            environment,
             permissions: ApiKeyPermissions {
                 can_ingest: req.can_ingest,
                 can_read_analytics: req.can_read,
@@ -289,11 +312,11 @@ impl ClientService {
                 allowed_i_ps: allowed_ips,
                 allowed_origins,
                 last_rotated: Some(Utc::now()),
-                rotation_warning_days: 30,
+                rotation_warning_days,
             },
             is_active: true,
             created_by: Some(user_id.to_string()),
-            expires_at: Some(Utc::now() + chrono::Duration::hours(24)),
+            expires_at,
             created_at: None,
             updated_at: None,
         };
@@ -348,12 +371,26 @@ impl ClientService {
         self.validate_api_key_access(client_id, key_id, user_role, user_client_id)
             .await?;
 
+        let expires_at = if let Some(mins) = req.expires_in_minutes {
+            if mins >= 5256000 {
+                Some(None)
+            } else {
+                Some(Some(Utc::now() + chrono::Duration::minutes(mins)))
+            }
+        } else {
+            req.expires_at.map(Some)
+        };
+
         let updates = ApiKeyUpdate {
             name: req.name,
+            description: req.description,
+            environment: req.environment,
             allowed_ips: req.allowed_ips,
             allowed_origins: req.allowed_origins,
             can_ingest: req.can_ingest,
             can_read_analytics: req.can_read,
+            expires_at,
+            rotation_warning_days: req.rotation_warning_days,
             ..Default::default()
         };
 

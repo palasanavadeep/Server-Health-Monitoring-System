@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use bson::{doc, oid::ObjectId};
+use futures::TryStreamExt;
 use mongodb::Database;
 use serde::{Deserialize, Serialize};
 
@@ -74,6 +75,7 @@ pub trait ClientRepository: Send + Sync {
     async fn create(&self, client: Client) -> Result<Client, AppError>;
     async fn find_by_id(&self, client_id: &str) -> Result<Option<Client>, AppError>;
     async fn find_by_slug(&self, slug: &str) -> Result<Option<Client>, AppError>;
+    async fn find_all(&self) -> Result<Vec<Client>, AppError>;
 }
 
 /// MongoDB implementation of `ClientRepository`.
@@ -125,5 +127,14 @@ impl ClientRepository for MongoClientRepository {
     async fn find_by_slug(&self, slug: &str) -> Result<Option<Client>, AppError> {
         let doc = self.collection.find_one(doc! { "slug": slug }).await?;
         Ok(doc.map(|d| d.to_domain()))
+    }
+
+    async fn find_all(&self) -> Result<Vec<Client>, AppError> {
+        let mut cursor = self.collection.find(doc! {}).await?;
+        let mut clients = Vec::new();
+        while let Some(doc) = cursor.try_next().await? {
+            clients.push(doc.to_domain());
+        }
+        Ok(clients)
     }
 }

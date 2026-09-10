@@ -58,6 +58,10 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &AppConfig) {
         web::scope("/api")
             .wrap(Authenticate::new(config))
             .route(
+                "/admin/clients",
+                web::get().to(client::get_all_clients),
+            )
+            .route(
                 "/admin/clients/onboard",
                 web::post().to(client::create_client),
             )

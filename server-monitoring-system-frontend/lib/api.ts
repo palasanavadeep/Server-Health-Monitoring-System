@@ -36,6 +36,7 @@ export interface ClientCompany {
     description?: string;
     website?: string;
     createdAt: string;
+    isActive?: boolean;
 }
 
 export interface ApiKey {
@@ -75,7 +76,8 @@ export interface ApiKeyCreateInput {
     name: string;
     description?: string;
     environment?: 'production' | 'staging' | 'development' | 'testing';
-    expiresAt?: number; // duration in minutes
+    expiresAt?: number | string; // duration in minutes or ISO timestamp
+    expiresInMinutes?: number;
     allowedIps?: string[];
     allowedOrigins?: string[];
     canIngest?: boolean;
@@ -254,13 +256,21 @@ function transformApiKeyInput(input: ApiKeyCreateInput) {
     const allowedOrigins = input.allowedOrigins ?? input.security?.allowedOrigins ?? ['*'];
     const canIngest = input.canIngest ?? input.permissions?.canIngest ?? true;
     const canRead = input.canRead ?? input.permissions?.canReadAnalytics ?? false;
+    const rotationWarningDays = input.security?.rotationWarningDays;
+    const expiresInMinutes = typeof input.expiresAt === 'number' ? input.expiresAt : input.expiresInMinutes;
+    const expiresAt = typeof input.expiresAt === 'string' ? input.expiresAt : undefined;
 
     return {
         name: input.name,
+        description: input.description,
+        environment: input.environment,
         allowedIps: Array.isArray(allowedIps) ? allowedIps : [allowedIps],
         allowedOrigins: Array.isArray(allowedOrigins) ? allowedOrigins : [allowedOrigins],
         canIngest,
         canRead,
+        expiresInMinutes,
+        expiresAt,
+        rotationWarningDays,
     };
 }
 
@@ -370,6 +380,22 @@ export const analyticsApi = {
 };
 
 export const clientApi = {
+    getAllClients: async (): Promise<ClientCompany[]> => {
+        const response = await api.get('/admin/clients');
+        const rawList = response.data?.data ?? response.data;
+        if (Array.isArray(rawList)) {
+            return rawList.map((client: any) => ({
+                id: String(client.id ?? client._id ?? ''),
+                name: String(client.name ?? ''),
+                email: client.email ? String(client.email) : undefined,
+                description: client.description ? String(client.description) : undefined,
+                website: client.website ? String(client.website) : undefined,
+                createdAt: String(client.createdAt ?? client.created_at ?? new Date().toISOString()),
+                isActive: client.isActive !== undefined ? Boolean(client.isActive) : (client.is_active !== undefined ? Boolean(client.is_active) : true),
+            }));
+        }
+        return [];
+    },
     createClient: async (clientData: { name: string; email: string; description?: string; website?: string }): Promise<ClientCompany> => {
         const response = await api.post('/admin/clients/onboard', clientData);
         const resData = response.data?.data ?? response.data;

@@ -1,5 +1,6 @@
 //! Client & API-key management request DTOs.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -45,6 +46,10 @@ pub struct CreateApiKeyRequest {
     #[validate(length(min = 1, message = "Name is required"))]
     pub name: String,
 
+    pub description: Option<String>,
+
+    pub environment: Option<String>,
+
     #[serde(default)]
     pub allowed_ips: Vec<String>,
 
@@ -56,6 +61,14 @@ pub struct CreateApiKeyRequest {
 
     #[serde(default = "default_true")]
     pub can_read: bool,
+
+    pub expires_at: Option<DateTime<Utc>>,
+
+    #[serde(alias = "expiresIn", alias = "expiresInMinutes")]
+    pub expires_in_minutes: Option<i64>,
+
+    #[serde(alias = "rotationWarningDays")]
+    pub rotation_warning_days: Option<u32>,
 }
 
 /// PUT /api/admin/clients/{clientId}/api/keys/{keyId} — update an API key.
@@ -63,10 +76,17 @@ pub struct CreateApiKeyRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateApiKeyRequest {
     pub name: Option<String>,
+    pub description: Option<String>,
+    pub environment: Option<String>,
     pub allowed_ips: Option<Vec<String>>,
     pub allowed_origins: Option<Vec<String>>,
     pub can_ingest: Option<bool>,
     pub can_read: Option<bool>,
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(alias = "expiresIn", alias = "expiresInMinutes")]
+    pub expires_in_minutes: Option<i64>,
+    #[serde(alias = "rotationWarningDays")]
+    pub rotation_warning_days: Option<u32>,
 }
 
 /// POST /api/admin/clients/{clientId}/api/keys/{keyId}/rotate — rotate secret.

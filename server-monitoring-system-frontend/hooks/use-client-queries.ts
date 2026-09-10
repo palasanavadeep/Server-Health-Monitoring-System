@@ -4,13 +4,26 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { clientApi, ApiKeyCreateInput, CreateClientUserInput } from '@/lib/api';
 
 export const CLIENT_QUERY_KEYS = {
+    CLIENTS: ['clients'],
     API_KEYS: (clientId: string) => ['apiKeys', clientId],
     USERS: (clientId?: string) => ['clientUsers', clientId || 'current'],
 };
 
+export function useClientsQuery(enabled = true) {
+    return useQuery({
+        queryKey: CLIENT_QUERY_KEYS.CLIENTS,
+        queryFn: () => clientApi.getAllClients(),
+        enabled,
+    });
+}
+
 export function useCreateClientMutation() {
+    const queryClient = useQueryClient();
     return useMutation({
         mutationFn: clientApi.createClient,
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: CLIENT_QUERY_KEYS.CLIENTS });
+        },
     });
 }
 

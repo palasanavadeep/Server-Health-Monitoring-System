@@ -31,9 +31,45 @@ import {
     Sliders,
     Building,
     Eye,
-    EyeOff
+    EyeOff,
+    Activity,
+    BarChart3,
+    Globe,
+    Shield,
+    ShieldAlert,
+    Clock,
+    Terminal,
+    Calendar,
+    Sparkles
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+type EnvironmentType = 'production' | 'staging' | 'development' | 'testing';
+
+interface EnvironmentOption {
+    id: EnvironmentType;
+    label: string;
+}
+
+const ENVIRONMENT_OPTIONS: EnvironmentOption[] = [
+    { id: 'production', label: 'Production' },
+    { id: 'staging', label: 'Staging' },
+    { id: 'development', label: 'Development' },
+    { id: 'testing', label: 'Testing' },
+];
+
+const EXPIRY_PRESETS = [
+    { label: '30 Days', minutes: 43200 },
+    { label: '90 Days', minutes: 129600 },
+    { label: '1 Year', minutes: 525600 },
+    { label: 'No Expiry', minutes: 5256000 }
+];
+
+const ROTATION_PRESETS = [
+    { label: '7 Days', days: 7 },
+    { label: '14 Days', days: 14 },
+    { label: '30 Days', days: 30 }
+];
 
 function formatShortApiKey(keyValue?: string, prefix?: string): string {
     if (!keyValue && !prefix) return '—';
@@ -73,6 +109,7 @@ export default function ApiKeysPage() {
     const [isSecretGeneratedModalOpen, setIsSecretGeneratedModalOpen] = useState(false);
     const [generatedKey, setGeneratedKey] = useState<string | null>(null);
     const [copied, setCopied] = useState(false);
+    const [copiedMasked, setCopiedMasked] = useState(false);
 
     // Selected key for detail / edit modal
     const [selectedKeyForDetails, setSelectedKeyForDetails] = useState<ApiKey | null>(null);
@@ -83,11 +120,10 @@ export default function ApiKeysPage() {
     // Creation Form inputs
     const [newKeyName, setNewKeyName] = useState('');
     const [newKeyDesc, setNewKeyDesc] = useState('');
-    const [newKeyEnv, setNewKeyEnv] = useState<'production' | 'staging' | 'development' | 'testing'>('production');
-    const [newKeyExpires, setNewKeyExpires] = useState<number>(1440);
+    const [newKeyEnv, setNewKeyEnv] = useState<EnvironmentType>('production');
+    const [newKeyExpires, setNewKeyExpires] = useState<number>(43200);
     const [newKeyCanIngest, setNewKeyCanIngest] = useState(true);
     const [newKeyCanRead, setNewKeyCanRead] = useState(false);
-    const [newKeyServices, setNewKeyServices] = useState('');
     const [newKeyIPs, setNewKeyIPs] = useState('0.0.0.0/0');
     const [newKeyOrigins, setNewKeyOrigins] = useState('*');
     const [newKeyWarnDays, setNewKeyWarnDays] = useState<number>(30);
@@ -95,10 +131,9 @@ export default function ApiKeysPage() {
     // Edit Form inputs
     const [editKeyName, setEditKeyName] = useState('');
     const [editKeyDesc, setEditKeyDesc] = useState('');
-    const [editKeyEnv, setEditKeyEnv] = useState<'production' | 'staging' | 'development' | 'testing'>('production');
+    const [editKeyEnv, setEditKeyEnv] = useState<EnvironmentType>('production');
     const [editKeyCanIngest, setEditKeyCanIngest] = useState(true);
     const [editKeyCanRead, setEditKeyCanRead] = useState(false);
-    const [editKeyServices, setEditKeyServices] = useState('');
     const [editKeyIPs, setEditKeyIPs] = useState('');
     const [editKeyOrigins, setEditKeyOrigins] = useState('');
     const [editKeyWarnDays, setEditKeyWarnDays] = useState<number>(30);
@@ -131,18 +166,17 @@ export default function ApiKeysPage() {
 
         const ipsArray = newKeyIPs.split(',').map(s => s.trim()).filter(Boolean);
         const originsArray = newKeyOrigins.split(',').map(s => s.trim()).filter(Boolean);
-        const servicesArray = newKeyServices.split(',').map(s => s.trim()).filter(Boolean);
 
         try {
             const res = await createKeyMutation.mutateAsync({
                 name: newKeyName.trim(),
                 description: newKeyDesc.trim() || undefined,
                 environment: newKeyEnv,
-                expiresAt: Number(newKeyExpires) || 1440,
+                expiresAt: Number(newKeyExpires) || 43200,
                 permissions: {
                     canIngest: newKeyCanIngest,
                     canReadAnalytics: newKeyCanRead,
-                    allowedServices: servicesArray
+                    allowedServices: []
                 },
                 security: {
                     allowedIPs: ipsArray.length ? ipsArray : undefined,
@@ -159,10 +193,9 @@ export default function ApiKeysPage() {
             setNewKeyName('');
             setNewKeyDesc('');
             setNewKeyEnv('production');
-            setNewKeyExpires(1440);
+            setNewKeyExpires(43200);
             setNewKeyCanIngest(true);
             setNewKeyCanRead(false);
-            setNewKeyServices('');
             setNewKeyIPs('0.0.0.0/0');
             setNewKeyOrigins('*');
             setNewKeyWarnDays(30);
@@ -178,6 +211,14 @@ export default function ApiKeysPage() {
         setCopied(true);
         toast('API Key copied to clipboard', 'success');
         setTimeout(() => setCopied(false), 2000);
+    };
+
+    const handleCopyMasked = (keyText: string) => {
+        if (!keyText) return;
+        navigator.clipboard.writeText(keyText);
+        setCopiedMasked(true);
+        toast('Token identifier copied', 'success');
+        setTimeout(() => setCopiedMasked(false), 2000);
     };
 
     const handleToggleKeyStatus = async (keyId: string, isActive: boolean) => {
@@ -220,10 +261,9 @@ export default function ApiKeysPage() {
         setSelectedKeyForDetails(key);
         setEditKeyName(key.name);
         setEditKeyDesc(key.description || '');
-        setEditKeyEnv((key.environment || 'production') as any);
+        setEditKeyEnv((key.environment || 'production') as EnvironmentType);
         setEditKeyCanIngest(key.permissions?.canIngest !== false);
         setEditKeyCanRead(key.permissions?.canReadAnalytics === true);
-        setEditKeyServices(key.permissions?.allowedServices?.join(', ') || '');
         setEditKeyIPs(key.security?.allowedIPs?.join(', ') || '0.0.0.0/0');
         setEditKeyOrigins(key.security?.allowedOrigins?.join(', ') || '*');
         setEditKeyWarnDays(key.security?.rotationWarningDays || 30);
@@ -236,7 +276,6 @@ export default function ApiKeysPage() {
 
         const ipsArray = editKeyIPs.split(',').map(s => s.trim()).filter(Boolean);
         const originsArray = editKeyOrigins.split(',').map(s => s.trim()).filter(Boolean);
-        const servicesArray = editKeyServices.split(',').map(s => s.trim()).filter(Boolean);
 
         try {
             await updateKeyMutation.mutateAsync({
@@ -247,7 +286,7 @@ export default function ApiKeysPage() {
                 permissions: {
                     canIngest: editKeyCanIngest,
                     canReadAnalytics: editKeyCanRead,
-                    allowedServices: servicesArray
+                    allowedServices: []
                 },
                 security: {
                     allowedIPs: ipsArray,
@@ -263,7 +302,7 @@ export default function ApiKeysPage() {
     };
 
     const handleDeleteKey = async (keyId: string) => {
-        if (!confirm("Are you sure you want to delete this API Key permanently?")) {
+        if (!confirm("Are you sure you want to delete this API Key permanently? This action cannot be undone.")) {
             return;
         }
 
@@ -285,11 +324,12 @@ export default function ApiKeysPage() {
             {/* Page Header with Compact Workspace Context */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#242932]">
                 <div>
-                    <h1 className="text-xl font-semibold tracking-tight text-zinc-100">
+                    <h1 className="text-xl font-semibold tracking-tight text-zinc-100 flex items-center gap-2">
+                        <KeyRound className="w-5 h-5 text-[#4CB8D6]" />
                         API Keys
                     </h1>
                     <div className="flex items-center gap-2 mt-0.5 text-xs text-zinc-400">
-                        <span>Manage telemetry ingestion credentials and network scopes.</span>
+                        <span>Manage telemetry ingestion credentials, access scopes, and firewall filters.</span>
                         <span className="text-zinc-600">•</span>
                         <span className="font-mono text-zinc-300">
                             Workspace: {selectedClientId.substring(0, 10)}...
@@ -317,7 +357,7 @@ export default function ApiKeysPage() {
                         type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search API keys by name or environment..."
+                        placeholder="Search API keys by name, environment, or token..."
                         className="w-full bg-[#111419] border border-[#242932] rounded px-8 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6] transition-colors"
                     />
                 </div>
@@ -360,6 +400,7 @@ export default function ApiKeysPage() {
                                     <th className="py-2.5 px-4 font-semibold">Key Name</th>
                                     <th className="py-2.5 px-4 font-semibold">Environment</th>
                                     <th className="py-2.5 px-4 font-semibold">API Key / Token</th>
+                                    <th className="py-2.5 px-4 font-semibold">Permissions</th>
                                     <th className="py-2.5 px-4 font-semibold">Created</th>
                                     <th className="py-2.5 px-4 font-semibold text-right w-28">Actions</th>
                                 </tr>
@@ -375,24 +416,41 @@ export default function ApiKeysPage() {
                                             <StatusBadge status={key.isActive ? 'healthy' : 'offline'} label={key.isActive ? 'Active' : 'Disabled'} />
                                         </td>
                                         <td className="py-3 px-4 font-medium text-zinc-200 whitespace-nowrap">
-                                            <span className="group-hover:text-[#4CB8D6] transition-colors">
+                                            <span className="group-hover:text-[#4CB8D6] transition-colors flex items-center gap-1.5">
                                                 {key.name}
                                             </span>
                                             {key.description && (
-                                                <span className="block text-[11px] text-zinc-500 font-normal">
+                                                <span className="block text-[11px] text-zinc-500 font-normal truncate max-w-xs">
                                                     {key.description}
                                                 </span>
                                             )}
                                         </td>
                                         <td className="py-3 px-4 whitespace-nowrap">
-                                            <span className="text-[10px] font-mono uppercase bg-[#181D24] text-zinc-300 px-1.5 py-0.5 rounded border border-[#242932]">
+                                            <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded border border-[#242932] bg-[#0E1014] text-zinc-300 inline-flex items-center">
                                                 {key.environment || 'production'}
                                             </span>
                                         </td>
                                         <td className="py-3 px-4 whitespace-nowrap">
-                                            <span className="font-mono text-zinc-300 text-[11px] bg-[#0E1014] px-2 py-0.5 rounded border border-[#242932]">
+                                            <span className="font-mono text-zinc-300 text-[11px] bg-[#0E1014] px-2 py-1 rounded border border-[#242932]">
                                                 {formatShortApiKey(key.keyValue, key.prefix)}
                                             </span>
+                                        </td>
+                                        <td className="py-3 px-4 whitespace-nowrap">
+                                            <div className="flex items-center gap-1">
+                                                {key.permissions?.canIngest !== false && (
+                                                    <span className="text-[9px] font-mono uppercase bg-[#4CB8D6]/10 text-[#4CB8D6] px-1.5 py-0.5 rounded border border-[#4CB8D6]/30">
+                                                        INGEST
+                                                    </span>
+                                                )}
+                                                {key.permissions?.canReadAnalytics && (
+                                                    <span className="text-[9px] font-mono uppercase bg-[#48B982]/10 text-[#48B982] px-1.5 py-0.5 rounded border border-[#48B982]/30">
+                                                        READ
+                                                    </span>
+                                                )}
+                                                {!key.permissions?.canIngest && !key.permissions?.canReadAnalytics && (
+                                                    <span className="text-[9px] text-zinc-500 font-mono">None</span>
+                                                )}
+                                            </div>
                                         </td>
                                         <td className="py-3 px-4 text-zinc-400 whitespace-nowrap font-mono text-[11px]">
                                             {new Date(key.createdAt).toLocaleDateString()}
@@ -437,119 +495,324 @@ export default function ApiKeysPage() {
                 )}
             </div>
 
-            {/* Semantic Create API Key Modal */}
+            {/* Redesigned Clean & Rich Create API Key Modal */}
             <Modal
                 isOpen={isCreateModalOpen}
                 onClose={() => setIsCreateModalOpen(false)}
                 title="Create API Key"
-                description="Generate an ingestion token with scoped permissions and network filters."
-                maxWidth="max-w-xl"
+                description="Generate a high-throughput telemetry ingestion token with scoped permissions and network filters."
+                maxWidth="max-w-2xl"
             >
                 <form onSubmit={handleCreateKey} className="space-y-4">
-                    {/* General Section */}
-                    <div className="space-y-3">
-                        <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">1. General Details</span>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div className="space-y-1">
-                                <label className="text-xs text-zinc-300 block">Key Name *</label>
-                                <input
-                                    type="text"
-                                    value={newKeyName}
-                                    onChange={(e) => setNewKeyName(e.target.value)}
-                                    placeholder="e.g. gateway-production"
-                                    required
-                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
-                                />
-                            </div>
+                    {/* Section 1: Identity & Environment */}
+                    <div className="space-y-2.5">
+                        <div className="flex items-center gap-2 pb-1 border-b border-[#242932]">
+                            <Sliders size={13} className="text-[#4CB8D6]" />
+                            <span className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider">
+                                01. Identity & Environment
+                            </span>
+                        </div>
 
-                            <div className="space-y-1">
-                                <label className="text-xs text-zinc-300 block">Environment</label>
-                                <select
-                                    value={newKeyEnv}
-                                    onChange={(e: any) => setNewKeyEnv(e.target.value)}
-                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
-                                >
-                                    <option value="production">Production</option>
-                                    <option value="staging">Staging</option>
-                                    <option value="development">Development</option>
-                                    <option value="testing">Testing</option>
-                                </select>
+                        <div className="space-y-1">
+                            <label className="text-xs font-medium text-zinc-200 block">
+                                Key Name <span className="text-[#E45865]">*</span>
+                            </label>
+                            <input
+                                type="text"
+                                value={newKeyName}
+                                onChange={(e) => setNewKeyName(e.target.value)}
+                                placeholder="e.g. gateway-production-ingress"
+                                required
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded-md px-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-[#4CB8D6] transition-colors"
+                            />
+                            <p className="text-[10px] text-zinc-500">
+                                A recognizable name to identify this token in telemetry streams and audit events.
+                            </p>
+                        </div>
+
+                        {/* Segmented Environment Picker */}
+                        <div className="space-y-1.5">
+                            <label className="text-xs font-medium text-zinc-200 block">
+                                Deployment Environment
+                            </label>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 p-1 bg-[#090B0E] border border-[#242932] rounded-lg">
+                                {ENVIRONMENT_OPTIONS.map((env) => {
+                                    const isSelected = newKeyEnv === env.id;
+                                    return (
+                                        <button
+                                            key={env.id}
+                                            type="button"
+                                            onClick={() => setNewKeyEnv(env.id)}
+                                            className={cn(
+                                                "py-1.5 px-3 rounded-md text-xs font-medium transition-all text-center cursor-pointer select-none",
+                                                isSelected 
+                                                    ? "bg-[#181D24] text-zinc-100 font-semibold border border-[#323946] shadow-xs" 
+                                                    : "text-zinc-400 hover:text-zinc-200 hover:bg-[#12151B] border border-transparent"
+                                            )}
+                                        >
+                                            {env.label}
+                                        </button>
+                                    );
+                                })}
                             </div>
                         </div>
 
                         <div className="space-y-1">
-                            <label className="text-xs text-zinc-300 block">Description (Optional)</label>
+                            <label className="text-xs font-medium text-zinc-200 block">
+                                Description <span className="text-zinc-500 text-[10px] font-normal">(Optional)</span>
+                            </label>
                             <input
                                 type="text"
                                 value={newKeyDesc}
                                 onChange={(e) => setNewKeyDesc(e.target.value)}
-                                placeholder="Describe service or team..."
-                                className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                                placeholder="e.g. Microservice metrics token for European Kubernetes node pool"
+                                className="w-full bg-[#0E1014] border border-[#242932] rounded-md px-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-[#4CB8D6] transition-colors"
                             />
                         </div>
                     </div>
 
-                    {/* Permissions Section */}
-                    <div className="space-y-2 pt-2 border-t border-[#242932]">
-                        <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">2. Permissions Scope</span>
-                        <div className="flex items-center gap-6">
-                            <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
-                                <input
-                                    type="checkbox"
-                                    checked={newKeyCanIngest}
-                                    onChange={(e) => setNewKeyCanIngest(e.target.checked)}
-                                    className="rounded bg-[#0E1014] border-[#242932] text-[#4CB8D6]"
-                                />
-                                Ingest telemetry events
-                            </label>
-                            <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
-                                <input
-                                    type="checkbox"
-                                    checked={newKeyCanRead}
-                                    onChange={(e) => setNewKeyCanRead(e.target.checked)}
-                                    className="rounded bg-[#0E1014] border-[#242932] text-[#4CB8D6]"
-                                />
-                                Read analytics metrics
-                            </label>
+                    {/* Section 2: Permissions & Scopes */}
+                    <div className="space-y-2.5">
+                        <div className="flex items-center gap-2 pb-1 border-b border-[#242932]">
+                            <Shield size={13} className="text-[#4CB8D6]" />
+                            <span className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider">
+                                02. Permissions & Scopes
+                            </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            {/* Ingest Telemetry Option */}
+                            <div
+                                role="checkbox"
+                                aria-checked={newKeyCanIngest}
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                    if (e.key === ' ' || e.key === 'Enter') {
+                                        e.preventDefault();
+                                        setNewKeyCanIngest(!newKeyCanIngest);
+                                    }
+                                }}
+                                onClick={() => setNewKeyCanIngest(!newKeyCanIngest)}
+                                className={cn(
+                                    "group flex items-center justify-between p-3 rounded-lg border transition-all cursor-pointer select-none",
+                                    newKeyCanIngest 
+                                        ? "bg-[#141920] border-[#4CB8D6]/50 shadow-xs" 
+                                        : "bg-[#0E1014] border-[#242932] hover:border-zinc-700 hover:bg-[#12151B]"
+                                )}
+                            >
+                                <div className="flex items-center gap-2.5">
+                                    <div className={cn(
+                                        "w-4.5 h-4.5 rounded-[4px] border flex items-center justify-center transition-all shrink-0",
+                                        newKeyCanIngest
+                                            ? "bg-[#4CB8D6] border-[#4CB8D6] text-zinc-950 shadow-xs shadow-[#4CB8D6]/20"
+                                            : "bg-[#0B0D10] border-[#2E3642] group-hover:border-zinc-500"
+                                    )}>
+                                        {newKeyCanIngest && <Check size={12} strokeWidth={3} className="text-zinc-950" />}
+                                    </div>
+                                    <span className={cn(
+                                        "text-xs font-medium transition-colors",
+                                        newKeyCanIngest ? "text-zinc-100 font-semibold" : "text-zinc-300 group-hover:text-zinc-200"
+                                    )}>
+                                        Ingest Telemetry Data
+                                    </span>
+                                </div>
+                                <span className={cn(
+                                    "text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border transition-colors",
+                                    newKeyCanIngest
+                                        ? "bg-[#4CB8D6]/15 text-[#4CB8D6] border-[#4CB8D6]/30 font-semibold"
+                                        : "bg-[#161A22] text-zinc-500 border-[#242932]"
+                                )}>
+                                    INGEST
+                                </span>
+                            </div>
+
+                            {/* Read Analytics Option */}
+                            <div
+                                role="checkbox"
+                                aria-checked={newKeyCanRead}
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                    if (e.key === ' ' || e.key === 'Enter') {
+                                        e.preventDefault();
+                                        setNewKeyCanRead(!newKeyCanRead);
+                                    }
+                                }}
+                                onClick={() => setNewKeyCanRead(!newKeyCanRead)}
+                                className={cn(
+                                    "group flex items-center justify-between p-3 rounded-lg border transition-all cursor-pointer select-none",
+                                    newKeyCanRead 
+                                        ? "bg-[#141920] border-[#4CB8D6]/50 shadow-xs" 
+                                        : "bg-[#0E1014] border-[#242932] hover:border-zinc-700 hover:bg-[#12151B]"
+                                )}
+                            >
+                                <div className="flex items-center gap-2.5">
+                                    <div className={cn(
+                                        "w-4.5 h-4.5 rounded-[4px] border flex items-center justify-center transition-all shrink-0",
+                                        newKeyCanRead
+                                            ? "bg-[#4CB8D6] border-[#4CB8D6] text-zinc-950 shadow-xs shadow-[#4CB8D6]/20"
+                                            : "bg-[#0B0D10] border-[#2E3642] group-hover:border-zinc-500"
+                                    )}>
+                                        {newKeyCanRead && <Check size={12} strokeWidth={3} className="text-zinc-950" />}
+                                    </div>
+                                    <span className={cn(
+                                        "text-xs font-medium transition-colors",
+                                        newKeyCanRead ? "text-zinc-100 font-semibold" : "text-zinc-300 group-hover:text-zinc-200"
+                                    )}>
+                                        Read Analytics & Metrics
+                                    </span>
+                                </div>
+                                <span className={cn(
+                                    "text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border transition-colors",
+                                    newKeyCanRead
+                                        ? "bg-[#48B982]/15 text-[#48B982] border-[#48B982]/30 font-semibold"
+                                        : "bg-[#161A22] text-zinc-500 border-[#242932]"
+                                )}>
+                                    READ
+                                </span>
+                            </div>
                         </div>
                     </div>
 
-                    {/* Network Restrictions Section */}
-                    <div className="space-y-3 pt-2 border-t border-[#242932]">
-                        <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">3. Network Restrictions</span>
+                    {/* Section 3: Network Security & Restrictions */}
+                    <div className="space-y-2.5">
+                        <div className="flex items-center gap-2 pb-1 border-b border-[#242932]">
+                            <Globe size={13} className="text-[#4CB8D6]" />
+                            <span className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider">
+                                03. Network Security & Filters
+                            </span>
+                        </div>
+
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {/* Allowed IPs */}
                             <div className="space-y-1">
-                                <label className="text-xs text-zinc-300 block">Allowed IP Ranges (CIDR)</label>
+                                <label className="text-xs font-medium text-zinc-200 block">
+                                    Allowed IP Ranges (CIDR)
+                                </label>
                                 <input
                                     type="text"
                                     value={newKeyIPs}
                                     onChange={(e) => setNewKeyIPs(e.target.value)}
-                                    placeholder="0.0.0.0/0 (all IPs)"
-                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-[#4CB8D6]"
+                                    placeholder="0.0.0.0/0"
+                                    className="w-full bg-[#0E1014] border border-[#242932] rounded-md px-3 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none focus:border-[#4CB8D6] transition-colors"
                                 />
+                                <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                                    <span className="text-[10px] text-zinc-500">Presets:</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => setNewKeyIPs('0.0.0.0/0')}
+                                        className="text-[10px] font-mono bg-[#181D24] text-zinc-300 hover:text-[#4CB8D6] hover:border-[#4CB8D6]/40 px-1.5 py-0.5 rounded border border-[#242932] cursor-pointer"
+                                    >
+                                        0.0.0.0/0 (Anywhere)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setNewKeyIPs('127.0.0.1/32')}
+                                        className="text-[10px] font-mono bg-[#181D24] text-zinc-300 hover:text-[#4CB8D6] hover:border-[#4CB8D6]/40 px-1.5 py-0.5 rounded border border-[#242932] cursor-pointer"
+                                    >
+                                        127.0.0.1/32 (Local)
+                                    </button>
+                                </div>
                             </div>
 
+                            {/* Allowed Origins */}
                             <div className="space-y-1">
-                                <label className="text-xs text-zinc-300 block">Allowed Origins</label>
+                                <label className="text-xs font-medium text-zinc-200 block">
+                                    Allowed HTTP Origins (CORS)
+                                </label>
                                 <input
                                     type="text"
                                     value={newKeyOrigins}
                                     onChange={(e) => setNewKeyOrigins(e.target.value)}
-                                    placeholder="* or https://app.domain.com"
-                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-[#4CB8D6]"
+                                    placeholder="*"
+                                    className="w-full bg-[#0E1014] border border-[#242932] rounded-md px-3 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none focus:border-[#4CB8D6] transition-colors"
                                 />
+                                <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                                    <span className="text-[10px] text-zinc-500">Presets:</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => setNewKeyOrigins('*')}
+                                        className="text-[10px] font-mono bg-[#181D24] text-zinc-300 hover:text-[#4CB8D6] hover:border-[#4CB8D6]/40 px-1.5 py-0.5 rounded border border-[#242932] cursor-pointer"
+                                    >
+                                        * (Wildcard)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setNewKeyOrigins('http://localhost:3000')}
+                                        className="text-[10px] font-mono bg-[#181D24] text-zinc-300 hover:text-[#4CB8D6] hover:border-[#4CB8D6]/40 px-1.5 py-0.5 rounded border border-[#242932] cursor-pointer"
+                                    >
+                                        localhost:3000
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    {/* Actions */}
-                    <div className="flex items-center justify-end gap-2 pt-4 border-t border-[#242932]">
+                    {/* Section 4: Key Lifespan & Rotation Alerts */}
+                    <div className="space-y-2.5">
+                        <div className="flex items-center gap-2 pb-1 border-b border-[#242932]">
+                            <Clock size={13} className="text-[#4CB8D6]" />
+                            <span className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider">
+                                04. Key Lifespan & Rotation Alerts
+                            </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                                <label className="text-xs font-medium text-zinc-200 block">
+                                    Expiration Lifespan
+                                </label>
+                                <div className="grid grid-cols-4 gap-1.5">
+                                    {EXPIRY_PRESETS.map(p => (
+                                        <button
+                                            key={p.minutes}
+                                            type="button"
+                                            onClick={() => setNewKeyExpires(p.minutes)}
+                                            className={cn(
+                                                "py-1 px-1.5 rounded border text-[10px] font-medium text-center transition-colors cursor-pointer",
+                                                newKeyExpires === p.minutes
+                                                    ? "bg-[#4CB8D6]/15 border-[#4CB8D6]/50 text-[#4CB8D6]"
+                                                    : "bg-[#0E1014] border-[#242932] text-zinc-400 hover:text-zinc-200"
+                                            )}
+                                        >
+                                            {p.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="space-y-1">
+                                <label className="text-xs font-medium text-zinc-200 block">
+                                    Rotation Warning Ahead
+                                </label>
+                                <div className="grid grid-cols-3 gap-1.5">
+                                    {ROTATION_PRESETS.map(p => (
+                                        <button
+                                            key={p.days}
+                                            type="button"
+                                            onClick={() => setNewKeyWarnDays(p.days)}
+                                            className={cn(
+                                                "py-1 px-1.5 rounded border text-[10px] font-medium text-center transition-colors cursor-pointer",
+                                                newKeyWarnDays === p.days
+                                                    ? "bg-[#4CB8D6]/15 border-[#4CB8D6]/50 text-[#4CB8D6]"
+                                                    : "bg-[#0E1014] border-[#242932] text-zinc-400 hover:text-zinc-200"
+                                            )}
+                                        >
+                                            {p.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Actions - Sticky at bottom of modal */}
+                    <div className="sticky -bottom-4 sm:-bottom-5 bg-[#111419]/95 backdrop-blur-xs pt-3 pb-1 -mx-4 sm:-mx-5 px-4 sm:px-5 border-t border-[#242932] flex items-center justify-end gap-2.5 z-10 mt-3">
                         <Button
                             type="button"
                             variant="outline"
                             size="sm"
                             onClick={() => setIsCreateModalOpen(false)}
-                            className="text-xs h-8 cursor-pointer"
+                            className="text-xs h-8 px-4 cursor-pointer"
                         >
                             Cancel
                         </Button>
@@ -557,49 +820,78 @@ export default function ApiKeysPage() {
                             type="submit"
                             size="sm"
                             isLoading={createKeyMutation.isPending}
-                            className="text-xs h-8 bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold cursor-pointer"
+                            className="text-xs h-8 px-5 bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold cursor-pointer gap-1.5"
                         >
-                            Create Key
+                            <KeyRound size={13} />
+                            Generate Key
                         </Button>
                     </div>
                 </form>
             </Modal>
 
-            {/* Secret Token Generated Modal */}
+            {/* Redesigned Secret Token Generated Modal */}
             <Modal
                 isOpen={isSecretGeneratedModalOpen}
                 onClose={() => {
                     setIsSecretGeneratedModalOpen(false);
                     setGeneratedKey(null);
                 }}
-                title="API Key Created"
-                description="Copy and securely store your raw secret token. It will not be shown again."
-                maxWidth="max-w-md"
+                title="API Key Created Successfully"
+                description="Securely store your raw token now. For security purposes, it will never be displayed again."
+                maxWidth="max-w-lg"
             >
-                <div className="space-y-4">
-                    <div className="p-3 rounded bg-[#0E1014] border border-[#242932] flex items-center justify-between gap-2">
-                        <code className="text-xs font-mono text-[#4CB8D6] select-all break-all flex-1">
-                            {generatedKey}
-                        </code>
-                        <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleCopyKey(generatedKey || '')}
-                            className="h-7 px-2.5 text-xs gap-1 cursor-pointer shrink-0"
-                        >
-                            {copied ? <Check size={12} className="text-[#48B982]" /> : <Copy size={12} />}
-                            {copied ? 'Copied' : 'Copy'}
-                        </Button>
+                <div className="space-y-5 pt-1">
+                    {/* Security Alert Banner */}
+                    <div className="p-3 rounded-lg bg-[#D99A3D]/10 border border-[#D99A3D]/30 flex items-start gap-3">
+                        <ShieldAlert className="w-5 h-5 text-[#D99A3D] shrink-0 mt-0.5" />
+                        <div className="space-y-0.5">
+                            <p className="text-xs font-semibold text-[#D99A3D]">Confidential Secret Token</p>
+                            <p className="text-[11px] text-zinc-300 leading-relaxed">
+                                Save this key in your secrets manager or environment configuration immediately. If lost, you must rotate the key to generate a new secret.
+                            </p>
+                        </div>
                     </div>
 
-                    <div className="flex justify-end pt-2">
+                    {/* High Contrast Token Box */}
+                    <div className="space-y-1.5">
+                        <label className="text-xs font-medium text-zinc-300 block">Raw API Key</label>
+                        <div className="p-3 rounded-lg bg-[#0B0D10] border border-[#242932] flex items-center justify-between gap-3">
+                            <code className="text-xs font-mono text-[#4CB8D6] select-all break-all flex-1 font-semibold">
+                                {generatedKey}
+                            </code>
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleCopyKey(generatedKey || '')}
+                                className="h-8 px-3 text-xs gap-1.5 cursor-pointer shrink-0 border-[#242932] hover:border-[#4CB8D6]"
+                            >
+                                {copied ? <Check size={13} className="text-[#48B982]" /> : <Copy size={13} />}
+                                {copied ? 'Copied' : 'Copy'}
+                            </Button>
+                        </div>
+                    </div>
+
+                    {/* Quick Integration Usage Tip */}
+                    <div className="p-3 rounded-lg bg-[#0E1014] border border-[#242932] space-y-1.5">
+                        <div className="flex items-center gap-2 text-zinc-400 text-[11px]">
+                            <Terminal size={12} className="text-[#4CB8D6]" />
+                            <span className="font-semibold uppercase tracking-wider text-[10px]">Usage Example (HTTP Header)</span>
+                        </div>
+                        <pre className="text-[11px] font-mono text-zinc-300 overflow-x-auto p-2 rounded bg-[#0B0D10] border border-[#242932]">
+                            {`curl -X POST https://api.monitor.domain/hit \\
+  -H "x-api-key: ${generatedKey ? formatShortApiKey(generatedKey) : 'sm_key_...'}" \\
+  -H "Content-Type: application/json"`}
+                        </pre>
+                    </div>
+
+                    <div className="flex justify-end pt-2 border-t border-[#242932]">
                         <Button
                             size="sm"
                             onClick={() => {
                                 setIsSecretGeneratedModalOpen(false);
                                 setGeneratedKey(null);
                             }}
-                            className="text-xs h-8 cursor-pointer bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold"
+                            className="text-xs h-8 px-5 cursor-pointer bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold"
                         >
                             Done
                         </Button>
@@ -607,138 +899,319 @@ export default function ApiKeysPage() {
                 </div>
             </Modal>
 
-            {/* Edit Key Modal */}
+            {/* Redesigned Clean & Rich Edit API Key Modal */}
             {selectedKeyForDetails && (
                 <Modal
                     isOpen={!!selectedKeyForDetails}
                     onClose={() => setSelectedKeyForDetails(null)}
-                    title={`Key Settings: ${selectedKeyForDetails.name}`}
-                    description="Update environment, IP filters, or rotate secret."
-                    maxWidth="max-w-lg"
+                    title={`Key Configuration: ${selectedKeyForDetails.name}`}
+                    description="Update environment tags, access capabilities, or network whitelist filters."
+                    maxWidth="max-w-2xl"
                 >
                     <form onSubmit={handleSaveEdit} className="space-y-4">
-                        <div className="grid grid-cols-2 gap-3">
+                        {/* Token Metadata Banner */}
+                        <div className="p-2.5 sm:p-3 rounded-lg bg-[#0E1014] border border-[#242932] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                             <div className="space-y-1">
-                                <label className="text-xs text-zinc-300 block">Key Name</label>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">Active Token ID</span>
+                                    <StatusBadge 
+                                        status={selectedKeyForDetails.isActive ? 'healthy' : 'offline'} 
+                                        label={selectedKeyForDetails.isActive ? 'Active' : 'Disabled'} 
+                                    />
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <code className="text-xs font-mono text-zinc-300 font-semibold">
+                                        {formatShortApiKey(selectedKeyForDetails.keyValue, selectedKeyForDetails.prefix)}
+                                    </code>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleCopyMasked(selectedKeyForDetails.keyValue || selectedKeyForDetails.prefix || '')}
+                                        title="Copy token prefix"
+                                        className="text-zinc-500 hover:text-zinc-200 cursor-pointer p-0.5"
+                                    >
+                                        {copiedMasked ? <Check size={12} className="text-[#48B982]" /> : <Copy size={12} />}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-3 text-zinc-400 text-xs font-mono">
+                                <div>
+                                    <span className="text-[10px] text-zinc-500 block uppercase">Created</span>
+                                    <span>{new Date(selectedKeyForDetails.createdAt).toLocaleDateString()}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Section 1: Identity & Environment */}
+                        <div className="space-y-2.5">
+                            <div className="flex items-center gap-2 pb-1 border-b border-[#242932]">
+                                <Sliders size={13} className="text-[#4CB8D6]" />
+                                <span className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider">
+                                    01. Identity & Environment
+                                </span>
+                            </div>
+
+                            <div className="space-y-1">
+                                <label className="text-xs font-medium text-zinc-200 block">
+                                    Key Name <span className="text-[#E45865]">*</span>
+                                </label>
                                 <input
                                     type="text"
                                     value={editKeyName}
                                     onChange={(e) => setEditKeyName(e.target.value)}
                                     required
                                     disabled={!canCreateKeys}
-                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                                    placeholder="e.g. gateway-production-ingress"
+                                    className="w-full bg-[#0E1014] border border-[#242932] rounded-md px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6] transition-colors disabled:opacity-60"
                                 />
                             </div>
+
+                            {/* Segmented Environment Picker */}
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-medium text-zinc-200 block">
+                                    Deployment Environment
+                                </label>
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 p-1 bg-[#090B0E] border border-[#242932] rounded-lg">
+                                    {ENVIRONMENT_OPTIONS.map((env) => {
+                                        const isSelected = editKeyEnv === env.id;
+                                        return (
+                                            <button
+                                                key={env.id}
+                                                type="button"
+                                                disabled={!canCreateKeys}
+                                                onClick={() => setEditKeyEnv(env.id)}
+                                                className={cn(
+                                                    "py-1.5 px-3 rounded-md text-xs font-medium transition-all text-center cursor-pointer select-none",
+                                                    isSelected 
+                                                        ? "bg-[#181D24] text-zinc-100 font-semibold border border-[#323946] shadow-xs" 
+                                                        : "text-zinc-400 hover:text-zinc-200 hover:bg-[#12151B] border border-transparent",
+                                                    !canCreateKeys && "pointer-events-none opacity-60"
+                                                )}
+                                            >
+                                                {env.label}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
                             <div className="space-y-1">
-                                <label className="text-xs text-zinc-300 block">Environment</label>
-                                <select
-                                    value={editKeyEnv}
-                                    onChange={(e: any) => setEditKeyEnv(e.target.value)}
+                                <label className="text-xs font-medium text-zinc-200 block">
+                                    Description <span className="text-zinc-500 text-[10px] font-normal">(Optional)</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    value={editKeyDesc}
+                                    onChange={(e) => setEditKeyDesc(e.target.value)}
                                     disabled={!canCreateKeys}
-                                    className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
+                                    placeholder="Purpose of this key, service or deployment..."
+                                    className="w-full bg-[#0E1014] border border-[#242932] rounded-md px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6] transition-colors disabled:opacity-60"
+                                />
+                            </div>
+                        </div>
+
+                        {/* Section 2: Permissions & Scopes */}
+                        <div className="space-y-2.5">
+                            <div className="flex items-center gap-2 pb-1 border-b border-[#242932]">
+                                <Shield size={13} className="text-[#4CB8D6]" />
+                                <span className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider">
+                                    02. Permissions & Scopes
+                                </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                {/* Ingest Telemetry Option */}
+                                <div
+                                    role="checkbox"
+                                    aria-checked={editKeyCanIngest}
+                                    tabIndex={canCreateKeys ? 0 : -1}
+                                    onKeyDown={(e) => {
+                                        if (!canCreateKeys) return;
+                                        if (e.key === ' ' || e.key === 'Enter') {
+                                            e.preventDefault();
+                                            setEditKeyCanIngest(!editKeyCanIngest);
+                                        }
+                                    }}
+                                    onClick={() => {
+                                        if (!canCreateKeys) return;
+                                        setEditKeyCanIngest(!editKeyCanIngest);
+                                    }}
+                                    className={cn(
+                                        "group flex items-center justify-between p-3 rounded-lg border transition-all select-none",
+                                        canCreateKeys ? "cursor-pointer" : "opacity-60 cursor-not-allowed",
+                                        editKeyCanIngest 
+                                            ? "bg-[#141920] border-[#4CB8D6]/50 shadow-xs" 
+                                            : "bg-[#0E1014] border-[#242932] hover:border-zinc-700 hover:bg-[#12151B]"
+                                    )}
                                 >
-                                    <option value="production">Production</option>
-                                    <option value="staging">Staging</option>
-                                    <option value="development">Development</option>
-                                    <option value="testing">Testing</option>
-                                </select>
+                                    <div className="flex items-center gap-2.5">
+                                        <div className={cn(
+                                            "w-4.5 h-4.5 rounded-[4px] border flex items-center justify-center transition-all shrink-0",
+                                            editKeyCanIngest
+                                                ? "bg-[#4CB8D6] border-[#4CB8D6] text-zinc-950 shadow-xs shadow-[#4CB8D6]/20"
+                                                : "bg-[#0B0D10] border-[#2E3642] group-hover:border-zinc-500"
+                                        )}>
+                                            {editKeyCanIngest && <Check size={12} strokeWidth={3} className="text-zinc-950" />}
+                                        </div>
+                                        <span className={cn(
+                                            "text-xs font-medium transition-colors",
+                                            editKeyCanIngest ? "text-zinc-100 font-semibold" : "text-zinc-300 group-hover:text-zinc-200"
+                                        )}>
+                                            Ingest Telemetry Data
+                                        </span>
+                                    </div>
+                                    <span className={cn(
+                                        "text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border transition-colors",
+                                        editKeyCanIngest
+                                            ? "bg-[#4CB8D6]/15 text-[#4CB8D6] border-[#4CB8D6]/30 font-semibold"
+                                            : "bg-[#161A22] text-zinc-500 border-[#242932]"
+                                    )}>
+                                        INGEST
+                                    </span>
+                                </div>
+
+                                {/* Read Analytics Option */}
+                                <div
+                                    role="checkbox"
+                                    aria-checked={editKeyCanRead}
+                                    tabIndex={canCreateKeys ? 0 : -1}
+                                    onKeyDown={(e) => {
+                                        if (!canCreateKeys) return;
+                                        if (e.key === ' ' || e.key === 'Enter') {
+                                            e.preventDefault();
+                                            setEditKeyCanRead(!editKeyCanRead);
+                                        }
+                                    }}
+                                    onClick={() => {
+                                        if (!canCreateKeys) return;
+                                        setEditKeyCanRead(!editKeyCanRead);
+                                    }}
+                                    className={cn(
+                                        "group flex items-center justify-between p-3 rounded-lg border transition-all select-none",
+                                        canCreateKeys ? "cursor-pointer" : "opacity-60 cursor-not-allowed",
+                                        editKeyCanRead 
+                                            ? "bg-[#141920] border-[#4CB8D6]/50 shadow-xs" 
+                                            : "bg-[#0E1014] border-[#242932] hover:border-zinc-700 hover:bg-[#12151B]"
+                                    )}
+                                >
+                                    <div className="flex items-center gap-2.5">
+                                        <div className={cn(
+                                            "w-4.5 h-4.5 rounded-[4px] border flex items-center justify-center transition-all shrink-0",
+                                            editKeyCanRead
+                                                ? "bg-[#4CB8D6] border-[#4CB8D6] text-zinc-950 shadow-xs shadow-[#4CB8D6]/20"
+                                                : "bg-[#0B0D10] border-[#2E3642] group-hover:border-zinc-500"
+                                        )}>
+                                            {editKeyCanRead && <Check size={12} strokeWidth={3} className="text-zinc-950" />}
+                                        </div>
+                                        <span className={cn(
+                                            "text-xs font-medium transition-colors",
+                                            editKeyCanRead ? "text-zinc-100 font-semibold" : "text-zinc-300 group-hover:text-zinc-200"
+                                        )}>
+                                            Read Analytics & Metrics
+                                        </span>
+                                    </div>
+                                    <span className={cn(
+                                        "text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border transition-colors",
+                                        editKeyCanRead
+                                            ? "bg-[#48B982]/15 text-[#48B982] border-[#48B982]/30 font-semibold"
+                                            : "bg-[#161A22] text-zinc-500 border-[#242932]"
+                                    )}>
+                                        READ
+                                    </span>
+                                </div>
                             </div>
                         </div>
 
-                        <div className="space-y-1">
-                            <label className="text-xs text-zinc-300 block">Description (Optional)</label>
-                            <input
-                                type="text"
-                                value={editKeyDesc}
-                                onChange={(e) => setEditKeyDesc(e.target.value)}
-                                disabled={!canCreateKeys}
-                                placeholder="Purpose of this key, service or deployment..."
-                                className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-[#4CB8D6]"
-                            />
-                        </div>
-
-                        {/* Scopes & Permissions */}
-                        <div className="space-y-2 pt-1 border-t border-[#242932]">
-                            <label className="text-xs font-medium text-zinc-300 block">Key Permissions & Scopes</label>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                <label className={cn(
-                                    "flex items-start gap-2 p-2.5 rounded border transition-colors cursor-pointer",
-                                    editKeyCanIngest ? "bg-[#4CB8D6]/10 border-[#4CB8D6]/30" : "bg-[#0E1014] border-[#242932]",
-                                    !canCreateKeys && "opacity-60 pointer-events-none"
-                                )}>
-                                    <input
-                                        type="checkbox"
-                                        checked={editKeyCanIngest}
-                                        onChange={(e) => setEditKeyCanIngest(e.target.checked)}
-                                        disabled={!canCreateKeys}
-                                        className="mt-0.5 rounded bg-zinc-900 border-zinc-700 text-[#4CB8D6] focus:ring-0"
-                                    />
-                                    <div>
-                                        <p className="text-xs font-medium text-zinc-200">Can Ingest Metrics</p>
-                                        <p className="text-[10px] text-zinc-400">Allows sending hit & metric telemetry to /hit</p>
-                                    </div>
-                                </label>
-
-                                <label className={cn(
-                                    "flex items-start gap-2 p-2.5 rounded border transition-colors cursor-pointer",
-                                    editKeyCanRead ? "bg-[#4CB8D6]/10 border-[#4CB8D6]/30" : "bg-[#0E1014] border-[#242932]",
-                                    !canCreateKeys && "opacity-60 pointer-events-none"
-                                )}>
-                                    <input
-                                        type="checkbox"
-                                        checked={editKeyCanRead}
-                                        onChange={(e) => setEditKeyCanRead(e.target.checked)}
-                                        disabled={!canCreateKeys}
-                                        className="mt-0.5 rounded bg-zinc-900 border-zinc-700 text-[#4CB8D6] focus:ring-0"
-                                    />
-                                    <div>
-                                        <p className="text-xs font-medium text-zinc-200">Can Read Analytics</p>
-                                        <p className="text-[10px] text-zinc-400">Allows query access to metrics & statistics</p>
-                                    </div>
-                                </label>
+                        {/* Section 3: Network Security & Restrictions */}
+                        <div className="space-y-2.5">
+                            <div className="flex items-center gap-2 pb-1 border-b border-[#242932]">
+                                <Globe size={13} className="text-[#4CB8D6]" />
+                                <span className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider">
+                                    03. Network Security & Filters
+                                </span>
                             </div>
-                        </div>
 
-                        {/* Security / Network Filters */}
-                        <div className="space-y-3 pt-1 border-t border-[#242932]">
-                            <label className="text-xs font-medium text-zinc-300 block">Security & Origin Filters</label>
-                            
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                {/* Allowed IPs */}
                                 <div className="space-y-1">
-                                    <label className="text-xs text-zinc-300 block">Allowed IP Filters (CIDR)</label>
+                                    <label className="text-xs font-medium text-zinc-200 block">
+                                        Allowed IP Ranges (CIDR)
+                                    </label>
                                     <input
                                         type="text"
                                         value={editKeyIPs}
                                         onChange={(e) => setEditKeyIPs(e.target.value)}
                                         disabled={!canCreateKeys}
-                                        placeholder="0.0.0.0/0 (all IPs)"
-                                        className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-[#4CB8D6]"
+                                        placeholder="0.0.0.0/0"
+                                        className="w-full bg-[#0E1014] border border-[#242932] rounded-md px-3 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none focus:border-[#4CB8D6] transition-colors disabled:opacity-60"
                                     />
+                                    {canCreateKeys && (
+                                        <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                                            <span className="text-[10px] text-zinc-500">Presets:</span>
+                                            <button
+                                                type="button"
+                                                onClick={() => setEditKeyIPs('0.0.0.0/0')}
+                                                className="text-[10px] font-mono bg-[#181D24] text-zinc-300 hover:text-[#4CB8D6] hover:border-[#4CB8D6]/40 px-1.5 py-0.5 rounded border border-[#242932] cursor-pointer"
+                                            >
+                                                0.0.0.0/0 (Anywhere)
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setEditKeyIPs('127.0.0.1/32')}
+                                                className="text-[10px] font-mono bg-[#181D24] text-zinc-300 hover:text-[#4CB8D6] hover:border-[#4CB8D6]/40 px-1.5 py-0.5 rounded border border-[#242932] cursor-pointer"
+                                            >
+                                                127.0.0.1/32 (Local)
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
 
+                                {/* Allowed Origins */}
                                 <div className="space-y-1">
-                                    <label className="text-xs text-zinc-300 block">Allowed Origins</label>
+                                    <label className="text-xs font-medium text-zinc-200 block">
+                                        Allowed HTTP Origins (CORS)
+                                    </label>
                                     <input
                                         type="text"
                                         value={editKeyOrigins}
                                         onChange={(e) => setEditKeyOrigins(e.target.value)}
                                         disabled={!canCreateKeys}
-                                        placeholder="* or https://app.domain.com"
-                                        className="w-full bg-[#0E1014] border border-[#242932] rounded px-3 py-1.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-[#4CB8D6]"
+                                        placeholder="*"
+                                        className="w-full bg-[#0E1014] border border-[#242932] rounded-md px-3 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none focus:border-[#4CB8D6] transition-colors disabled:opacity-60"
                                     />
+                                    {canCreateKeys && (
+                                        <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                                            <span className="text-[10px] text-zinc-500">Presets:</span>
+                                            <button
+                                                type="button"
+                                                onClick={() => setEditKeyOrigins('*')}
+                                                className="text-[10px] font-mono bg-[#181D24] text-zinc-300 hover:text-[#4CB8D6] hover:border-[#4CB8D6]/40 px-1.5 py-0.5 rounded border border-[#242932] cursor-pointer"
+                                            >
+                                                * (Wildcard)
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setEditKeyOrigins('http://localhost:3000')}
+                                                className="text-[10px] font-mono bg-[#181D24] text-zinc-300 hover:text-[#4CB8D6] hover:border-[#4CB8D6]/40 px-1.5 py-0.5 rounded border border-[#242932] cursor-pointer"
+                                            >
+                                                localhost:3000
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>
 
-                        <div className="flex items-center justify-between pt-4 border-t border-[#242932]">
-                            {canCreateKeys && (
+                        {/* Actions - Sticky at bottom of modal */}
+                        <div className="sticky -bottom-4 sm:-bottom-5 bg-[#111419]/95 backdrop-blur-xs pt-3 pb-1 -mx-4 sm:-mx-5 px-4 sm:px-5 border-t border-[#242932] flex items-center justify-between z-10 mt-3">
+                            {canCreateKeys ? (
                                 <div className="flex items-center gap-2">
                                     <Button
                                         type="button"
                                         variant="outline"
                                         size="sm"
                                         onClick={() => handleRotateKey(selectedKeyForDetails.keyId || selectedKeyForDetails.id)}
-                                        className="h-8 text-xs gap-1 text-[#D99A3D] hover:bg-[#D99A3D]/10 cursor-pointer"
+                                        className="h-8 text-xs gap-1.5 border border-[#D99A3D]/40 bg-[#D99A3D]/10 text-[#D99A3D] hover:bg-[#D99A3D]/20 cursor-pointer"
                                     >
                                         <RefreshCw size={12} />
                                         Rotate Secret
@@ -748,21 +1221,23 @@ export default function ApiKeysPage() {
                                         variant="outline"
                                         size="sm"
                                         onClick={() => handleDeleteKey(selectedKeyForDetails.keyId || selectedKeyForDetails.id)}
-                                        className="h-8 text-xs gap-1 text-[#E45865] hover:bg-[#E45865]/10 cursor-pointer"
+                                        className="h-8 text-xs gap-1.5 border border-[#E45865]/40 bg-[#E45865]/10 text-[#E45865] hover:bg-[#E45865]/20 cursor-pointer"
                                     >
                                         <Trash2 size={12} />
                                         Delete
                                     </Button>
                                 </div>
+                            ) : (
+                                <div />
                             )}
 
-                            <div className="flex items-center gap-2 ml-auto">
+                            <div className="flex items-center gap-2.5 ml-auto">
                                 <Button
                                     type="button"
                                     variant="outline"
                                     size="sm"
                                     onClick={() => setSelectedKeyForDetails(null)}
-                                    className="h-8 text-xs cursor-pointer"
+                                    className="h-8 text-xs px-4 cursor-pointer"
                                 >
                                     Cancel
                                 </Button>
@@ -771,8 +1246,9 @@ export default function ApiKeysPage() {
                                         type="submit"
                                         size="sm"
                                         isLoading={updateKeyMutation.isPending}
-                                        className="h-8 text-xs bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold cursor-pointer"
+                                        className="h-8 text-xs px-5 bg-[#4CB8D6] hover:bg-[#65C6E0] text-zinc-950 font-semibold cursor-pointer gap-1.5"
                                     >
+                                        <Save size={13} />
                                         Save Changes
                                     </Button>
                                 )}

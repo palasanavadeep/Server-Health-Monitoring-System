@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/auth-context';
-import { useCreateClientMutation } from '@/hooks/use-client-queries';
+import { useClientsQuery, useCreateClientMutation } from '@/hooks/use-client-queries';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
@@ -15,18 +15,12 @@ import {
     Copy, 
     Check, 
     Users, 
-    ArrowUpRight,
-    Search
+    Search,
+    RefreshCw,
+    Loader2,
+    ExternalLink
 } from 'lucide-react';
-
-interface TenantRecord {
-    id: string;
-    name: string;
-    email?: string;
-    website?: string;
-    description?: string;
-    createdAt: string;
-}
+import { cn } from '@/lib/utils';
 
 export default function TenantsPage() {
     const toast = useToast();
@@ -48,24 +42,23 @@ export default function TenantsPage() {
     const [website, setWebsite] = useState('');
     const [description, setDescription] = useState('');
 
-    // Local storage of onboarded tenants
-    const [tenants, setTenants] = useState<TenantRecord[]>(() => {
-        if (typeof window !== 'undefined') {
-            try {
-                const saved = localStorage.getItem('sm_onboarded_tenants');
-                return saved ? JSON.parse(saved) : [];
-            } catch {
-                return [];
-            }
-        }
-        return [];
-    });
+    // Fetch all clients from backend using React Query
+    const isSuperAdmin = !!user && user.role === 'super_admin';
+    const { 
+        data: clientsData, 
+        isPending, 
+        refetch, 
+        isFetching 
+    } = useClientsQuery(isSuperAdmin);
+
+    const tenants = clientsData ?? [];
 
     const filteredTenants = tenants.filter(t => 
         !searchQuery.trim() ||
         t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         t.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (t.email && t.email.toLowerCase().includes(searchQuery.toLowerCase()))
+        (t.email && t.email.toLowerCase().includes(searchQuery.toLowerCase())) ||
+        (t.description && t.description.toLowerCase().includes(searchQuery.toLowerCase()))
     );
 
     const handleCreateTenant = async (e: React.FormEvent) => {
@@ -82,25 +75,6 @@ export default function TenantsPage() {
                 description: description.trim() || undefined,
                 website: website.trim() || undefined,
             });
-
-            const newTenant: TenantRecord = {
-                id: res.id,
-                name: res.name,
-                email: res.email,
-                website: res.website,
-                description: res.description,
-                createdAt: res.createdAt || new Date().toISOString(),
-            };
-
-            const updated = [newTenant, ...tenants];
-            setTenants(updated);
-            if (typeof window !== 'undefined') {
-                try {
-                    localStorage.setItem('sm_onboarded_tenants', JSON.stringify(updated));
-                } catch (e) {
-                    console.error(e);
-                }
-            }
 
             toast(`Tenant organization '${res.name}' created successfully!`, 'success');
             setName('');
@@ -133,11 +107,19 @@ export default function TenantsPage() {
                         Tenants
                     </h1>
                     <p className="text-xs text-zinc-400 mt-0.5">
-                        Provision isolated tenant organizations and telemetry environments.
+                        Provision and monitor isolated tenant organizations across the monitoring cluster.
                     </p>
                 </div>
 
                 <div className="flex items-center gap-2">
+                    <button
+                        onClick={() => refetch()}
+                        disabled={isFetching}
+                        className="p-2 text-zinc-400 hover:text-zinc-200 hover:bg-[#181D24] rounded-md border border-[#242932] transition-colors cursor-pointer disabled:opacity-50"
+                        title="Refresh clients list"
+                    >
+                        <RefreshCw size={13} className={cn(isFetching && "animate-spin text-[#4CB8D6]")} />
+                    </button>
                     <Link href="/dashboard/tenants/users">
                         <Button variant="outline" size="sm" className="text-xs h-8 gap-1.5 cursor-pointer">
                             <Users size={13} />
@@ -163,24 +145,43 @@ export default function TenantsPage() {
                         type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search tenants by name or ID..."
+                        placeholder="Search tenants by name, ID, or email..."
                         className="w-full bg-[#111419] border border-[#242932] rounded px-8 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-[#4CB8D6] transition-colors"
                     />
                 </div>
 
-                <span className="text-xs text-zinc-500 font-mono">
-                    {filteredTenants.length} {filteredTenants.length === 1 ? 'tenant' : 'tenants'}
-                </span>
+                <div className="flex items-center gap-3">
+                    {isFetching && !isPending && (
+                        <span className="text-[11px] text-[#4CB8D6] flex items-center gap-1.5">
+                            <Loader2 size={11} className="animate-spin" />
+                            Updating...
+                        </span>
+                    )}
+                    <span className="text-xs text-zinc-500 font-mono">
+                        {filteredTenants.length} {filteredTenants.length === 1 ? 'tenant' : 'tenants'}
+                    </span>
+                </div>
             </div>
 
             {/* Dense Flat Data Table */}
             <div className="surface-panel overflow-hidden">
-                {filteredTenants.length === 0 ? (
+                {isPending ? (
+                    <div className="text-center py-16 p-6">
+                        <Loader2 className="w-7 h-7 animate-spin text-[#4CB8D6] mx-auto mb-3" />
+                        <p className="text-xs font-semibold text-zinc-300">Loading Tenants...</p>
+                        <p className="text-[11px] text-zinc-500 mt-0.5">Fetching registered client organizations from database</p>
+                    </div>
+                ) : filteredTenants.length === 0 ? (
                     <div className="text-center py-12 p-6">
                         <Building className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
-                        <p className="text-xs font-semibold text-zinc-300">No Tenants Registered Yet</p>
+                        <p className="text-xs font-semibold text-zinc-300">
+                            {searchQuery ? 'No Matching Tenants Found' : 'No Tenants Registered Yet'}
+                        </p>
                         <p className="text-[11px] text-zinc-500 max-w-xs mx-auto mt-0.5">
-                            Register a client organization to provision isolated telemetry workspaces.
+                            {searchQuery 
+                                ? `No tenant organizations matched "${searchQuery}". Try clearing search filters.`
+                                : 'Register a client organization to provision isolated telemetry workspaces.'
+                            }
                         </p>
                         {!searchQuery && (
                             <Button
@@ -201,6 +202,7 @@ export default function TenantsPage() {
                                     <th className="py-2.5 px-4 font-semibold">Organization</th>
                                     <th className="py-2.5 px-4 font-semibold">Client ID (UUID)</th>
                                     <th className="py-2.5 px-4 font-semibold">Contact Email</th>
+                                    <th className="py-2.5 px-4 font-semibold">Status</th>
                                     <th className="py-2.5 px-4 font-semibold">Registered</th>
                                     <th className="py-2.5 px-4 font-semibold text-right w-36">Actions</th>
                                 </tr>
@@ -209,20 +211,41 @@ export default function TenantsPage() {
                                 {filteredTenants.map((t) => (
                                     <tr key={t.id} className="hover:bg-[#181D24] transition-colors">
                                         <td className="py-3 px-4 font-medium text-zinc-200 whitespace-nowrap">
-                                            <span>{t.name}</span>
+                                            <div className="flex items-center gap-2">
+                                                <span className="font-semibold text-zinc-100">{t.name}</span>
+                                                {t.website && (
+                                                    <a 
+                                                        href={t.website.startsWith('http') ? t.website : `https://${t.website}`}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        className="text-zinc-500 hover:text-[#4CB8D6] transition-colors"
+                                                        title={t.website}
+                                                    >
+                                                        <ExternalLink size={11} />
+                                                    </a>
+                                                )}
+                                            </div>
                                             {t.description && (
-                                                <span className="block text-[11px] text-zinc-500 font-normal">
+                                                <span className="block text-[11px] text-zinc-500 font-normal truncate max-w-xs">
                                                     {t.description}
                                                 </span>
                                             )}
                                         </td>
-                                        <td className="py-3 px-4 font-mono text-zinc-400 whitespace-nowrap">
-                                            {t.id}
+                                        <td className="py-3 px-4 font-mono text-zinc-300 whitespace-nowrap">
+                                            <span className="bg-[#0E1014] px-2 py-1 rounded border border-[#242932] text-[11px]">
+                                                {t.id}
+                                            </span>
                                         </td>
-                                        <td className="py-3 px-4 text-zinc-400 whitespace-nowrap">
+                                        <td className="py-3 px-4 text-zinc-300 whitespace-nowrap">
                                             {t.email || '—'}
                                         </td>
-                                        <td className="py-3 px-4 text-zinc-500 whitespace-nowrap font-mono text-[11px]">
+                                        <td className="py-3 px-4 whitespace-nowrap">
+                                            <StatusBadge 
+                                                status={t.isActive !== false ? 'healthy' : 'offline'} 
+                                                label={t.isActive !== false ? 'Active' : 'Inactive'} 
+                                            />
+                                        </td>
+                                        <td className="py-3 px-4 text-zinc-400 whitespace-nowrap font-mono text-[11px]">
                                             {new Date(t.createdAt).toLocaleDateString()}
                                         </td>
                                         <td className="py-3 px-4 text-right whitespace-nowrap">
@@ -231,7 +254,7 @@ export default function TenantsPage() {
                                                     variant="outline"
                                                     size="sm"
                                                     onClick={() => handleCopy(t.id, t.id)}
-                                                    className="h-7 px-2 text-xs gap-1 cursor-pointer"
+                                                    className="h-7 px-2 text-xs gap-1 cursor-pointer hover:border-[#4CB8D6]"
                                                 >
                                                     {copiedId === t.id ? <Check size={12} className="text-[#48B982]" /> : <Copy size={12} />}
                                                     Copy ID
@@ -240,7 +263,7 @@ export default function TenantsPage() {
                                                     <Button
                                                         variant="secondary"
                                                         size="sm"
-                                                        className="h-7 px-2 text-xs gap-1 cursor-pointer"
+                                                        className="h-7 px-2 text-xs gap-1 cursor-pointer bg-[#141920] hover:bg-[#1C222B] border border-[#242932]"
                                                     >
                                                         <Users size={12} />
                                                         Users
