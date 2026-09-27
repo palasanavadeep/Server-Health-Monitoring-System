@@ -92,9 +92,17 @@ thiserror = "2"
 # ── Async Utilities ───────────────────────────────────────────────────────────
 async-trait  = "0.1"
 tokio-stream = "0.1"
-lru = "0.18.2"
-tokio-util = "0.7.19"
-governor = "0.10.4"
+lru          = "0.12"
+tokio-util   = "0.7"
+governor     = "0.10"
+
+# ── In-process Caching ────────────────────────────────────────────────────────
+# moka: async-aware LRU + TTL cache with built-in single-flight (try_get_with)
+moka     = { version = "0.12", features = ["future"] }
+# dashmap: concurrent HashMap — used for per-client daily ingest quota counters
+dashmap  = "6"
+# sha2: hash raw API keys before using them as cache keys (never store plaintext)
+sha2     = "0.10"
 
 [profile.release]
 opt-level     = 3

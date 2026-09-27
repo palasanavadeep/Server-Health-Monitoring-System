@@ -14,11 +14,15 @@ use crate::util::response::ResponseFormatter;
 /// Data extracted from JWT and attached to request extensions.
 #[derive(Debug, Clone)]
 pub struct AuthenticatedUser {
-    pub user_id: String,
-    pub email: String,
-    pub username: String,
-    pub role: String,
-    pub client_id: Option<String>,
+    pub user_id:            String,
+    pub email:              String,
+    pub username:           String,
+    pub role:               String,
+    pub client_id:          Option<String>,
+    /// Derived from role claim — true when role == "super_admin".
+    pub is_super_admin:     bool,
+    /// Embedded at login time; eliminates DB round-trip for analytics permission checks.
+    pub can_view_analytics: bool,
 }
 
 /// Authenticate middleware factory.
@@ -99,11 +103,13 @@ where
                     let claims = token_data.claims;
 
                     let user = AuthenticatedUser {
-                        user_id: claims.user_id,
-                        email: claims.email,
-                        username: claims.username,
-                        role: claims.role,
-                        client_id: claims.client_id,
+                        user_id:            claims.user_id,
+                        email:              claims.email,
+                        username:           claims.username,
+                        role:               claims.role,
+                        client_id:          claims.client_id,
+                        is_super_admin:     claims.is_super_admin,
+                        can_view_analytics: claims.can_view_analytics,
                     };
 
                     // Attach user to request extensions

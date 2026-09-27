@@ -31,10 +31,20 @@ export default function OverviewDashboardPage() {
         notFound();
     }
 
+    const { startTime, endTime } = useMemo(() => {
+        const now = new Date();
+        const durationHours = timeRange === '1h' ? 1 : timeRange === '7d' ? 168 : 24;
+        return {
+            startTime: new Date(now.getTime() - durationHours * 60 * 60 * 1000).toISOString(),
+            endTime: now.toISOString(),
+        };
+    }, [timeRange]);
+
     const { data, isPending, error, refetch } = useDashboardQuery(
-        user?.clientId ? { clientId: user.clientId } : undefined,
+        user?.clientId ? { clientId: user.clientId, startTime, endTime } : undefined,
         { enabled: user?.role !== 'super_admin' }
     );
+
 
     const stats = data?.data?.stats ?? null;
     const topEndpoints = data?.data?.topEndpoints ?? [];

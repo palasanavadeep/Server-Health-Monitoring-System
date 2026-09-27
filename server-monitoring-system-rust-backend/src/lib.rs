@@ -15,6 +15,7 @@
 //! ├── router/      — Route registration
 //! ├── middleware/  — actix-web middleware (JWT, rate-limit…)
 //! ├── messaging/   — RabbitMQ producer + consumer
+//! ├── cache/       — In-process caches (API key TTL, tenant config, quota tracker)
 //! ├── resilience/  — Circuit breaker + retry strategy
 //! └── util/        — Shared utilities (response formatter, security, IP)
 //! ```
@@ -22,6 +23,7 @@
 pub mod app_state;
 
 // Infrastructure
+pub mod cache;
 pub mod config;
 
 // Core domain — business entities only

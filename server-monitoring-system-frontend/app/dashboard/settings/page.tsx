@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { useAuth } from '@/contexts/auth-context';
 import { authApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -15,12 +16,19 @@ import {
     Building,
     KeyRound,
     Eye,
-    EyeOff
+    EyeOff,
+    Sliders,
+    ArrowRight
 } from 'lucide-react';
+import { useTenantConfigQuery } from '@/hooks/use-tenant-config';
 
 export default function SettingsPage() {
     const toast = useToast();
     const { user, refreshProfile, logout } = useAuth();
+
+    const { data: tenantConfig, isPending: isTenantConfigLoading } = useTenantConfigQuery(user?.clientId, {
+        enabled: !!user?.clientId,
+    });
 
     // Profile updates form fields
     const [username, setUsername] = useState('');
@@ -155,6 +163,66 @@ export default function SettingsPage() {
                         </span>
                     </div>
                 </div>
+            </div>
+
+            {/* Tenant Metric & Telemetry Settings */}
+            <div className="surface-panel p-5 space-y-4">
+                <div className="flex items-center justify-between pb-3 border-b border-[#242932]">
+                    <div>
+                        <h2 className="text-sm font-semibold text-zinc-200">
+                            {user?.clientId ? "Workspace Telemetry & Metric Configuration" : "Tenant Telemetry Configurations"}
+                        </h2>
+                        <p className="text-xs text-zinc-400 mt-0.5">
+                            {user?.clientId
+                                ? "Active latency calculation thresholds, histogram lenses, and quota caps for your organization."
+                                : "Manage per-tenant Apdex thresholds, quantile histogram profiles, and ingest limits."}
+                        </p>
+                    </div>
+                    <Link href="/dashboard/client-config">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2.5 text-xs gap-1.5 cursor-pointer hover:border-[#4CB8D6]"
+                        >
+                            <Sliders size={12} />
+                            Manage Configuration
+                            <ArrowRight size={11} className="ml-0.5 text-zinc-400" />
+                        </Button>
+                    </Link>
+                </div>
+
+                {user?.clientId && (
+                    isTenantConfigLoading ? (
+                        <div className="py-6 text-center text-xs text-zinc-500">Loading telemetry settings...</div>
+                    ) : (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                            <div className="p-3 rounded bg-[#0E1014] border border-[#242932]">
+                                <span className="text-[10px] uppercase font-semibold text-zinc-400 block">Apdex Target (T)</span>
+                                <span className="text-sm font-mono font-bold text-[#4CB8D6] mt-1 block">
+                                    {tenantConfig?.apdexThresholdMs || 500} ms
+                                </span>
+                            </div>
+                            <div className="p-3 rounded bg-[#0E1014] border border-[#242932]">
+                                <span className="text-[10px] uppercase font-semibold text-zinc-400 block">Histogram Lens</span>
+                                <span className="text-sm font-semibold text-zinc-200 capitalize mt-1 block">
+                                    {tenantConfig?.histogramProfile?.name?.replace('_', ' ') || 'Standard'}
+                                </span>
+                            </div>
+                            <div className="p-3 rounded bg-[#0E1014] border border-[#242932]">
+                                <span className="text-[10px] uppercase font-semibold text-zinc-400 block">Data Retention</span>
+                                <span className="text-sm font-mono font-bold text-zinc-200 mt-1 block">
+                                    {tenantConfig?.dataRetentionDays || 90} days
+                                </span>
+                            </div>
+                            <div className="p-3 rounded bg-[#0E1014] border border-[#242932]">
+                                <span className="text-[10px] uppercase font-semibold text-zinc-400 block">Daily Quota</span>
+                                <span className="text-sm font-mono font-bold text-zinc-200 mt-1 block">
+                                    {tenantConfig?.dailyIngestQuota ? `${tenantConfig.dailyIngestQuota.toLocaleString()} /day` : 'Unlimited'}
+                                </span>
+                            </div>
+                        </div>
+                    )
+                )}
             </div>
 
             {/* Danger Zone */}

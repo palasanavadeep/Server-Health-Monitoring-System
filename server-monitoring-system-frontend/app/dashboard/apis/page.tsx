@@ -1,12 +1,10 @@
 "use client";
 
 import { useState, useMemo } from 'react';
-import { notFound } from 'next/navigation';
+import { notFound, useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/auth-context';
 import { useApisMetricsQuery } from '@/hooks/use-dashboard-queries';
 import { StatusBadge, HealthDot } from '@/components/ui/status-badge';
-import { Drawer } from '@/components/ui/drawer';
-import { StatusBreakdown } from '@/components/charts/status-breakdown';
 import { Button } from '@/components/ui/button';
 import { 
     Search, 
@@ -24,8 +22,32 @@ import {
 } from 'lucide-react';
 import { ApiMetricsEntry } from '@/lib/api';
 
-type SortField = 'endpoint' | 'hits' | 'avgLatency' | 'maxLatency' | 'errorRate';
+type SortField = 'endpoint' | 'hits' | 'rpm' | 'avgLatency' | 'p95' | 'maxLatency' | 'errorRate' | 'apdex';
 type SortOrder = 'asc' | 'desc';
+
+function getApdexBadge(score?: number) {
+    if (score === undefined || score === null) return null;
+    let color = 'bg-[#48B982]/10 text-[#48B982] border-[#48B982]/30';
+    let label = 'Excellent';
+    if (score < 0.70) {
+        color = 'bg-[#E45865]/10 text-[#E45865] border-[#E45865]/30';
+        label = 'Poor';
+    } else if (score < 0.85) {
+        color = 'bg-[#F59E0B]/10 text-[#F59E0B] border-[#F59E0B]/30';
+        label = 'Fair';
+    } else if (score < 0.94) {
+        color = 'bg-[#4CB8D6]/10 text-[#4CB8D6] border-[#4CB8D6]/30';
+        label = 'Good';
+    }
+    return (
+        <span 
+            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border ${color}`} 
+            title={`Apdex: ${score.toFixed(4)} (${label})`}
+        >
+            {score.toFixed(2)}
+        </span>
+    );
+}
 
 export default function ApisPage() {
     const { user, loading } = useAuth();
@@ -39,6 +61,8 @@ export default function ApisPage() {
     const [page, setPage] = useState(1);
     const [limit, setLimit] = useState(10);
 
+    const router = useRouter();
+
     // Filters and search states
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedMethod, setSelectedMethod] = useState('ALL');
@@ -46,9 +70,6 @@ export default function ApisPage() {
     const [timeRange, setTimeRange] = useState('24h');
     const [sortField, setSortField] = useState<SortField>('hits');
     const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
-
-    // Selected Route for Investigation Drawer
-    const [selectedRoute, setSelectedRoute] = useState<ApiMetricsEntry | null>(null);
 
     // Paginated metrics query
     const { data: metricsData, isPending, error, refetch, isFetching } = useApisMetricsQuery(
@@ -103,15 +124,24 @@ export default function ApisPage() {
             } else if (sortField === 'hits') {
                 valA = a.totalHits;
                 valB = b.totalHits;
+            } else if (sortField === 'rpm') {
+                valA = a.throughputRpm ?? 0;
+                valB = b.throughputRpm ?? 0;
             } else if (sortField === 'avgLatency') {
-                valA = a.avgLatency;
-                valB = b.avgLatency;
+                valA = a.percentiles?.p50 ?? a.avgLatency;
+                valB = b.percentiles?.p50 ?? b.avgLatency;
+            } else if (sortField === 'p95') {
+                valA = a.percentiles?.p95 ?? (a.avgLatency + (a.maxLatency - a.avgLatency) * 0.9);
+                valB = b.percentiles?.p95 ?? (b.avgLatency + (b.maxLatency - b.avgLatency) * 0.9);
             } else if (sortField === 'maxLatency') {
-                valA = a.maxLatency;
-                valB = b.maxLatency;
+                valA = a.percentiles?.p99 ?? a.maxLatency;
+                valB = b.percentiles?.p99 ?? b.maxLatency;
             } else if (sortField === 'errorRate') {
                 valA = a.errorRate;
                 valB = b.errorRate;
+            } else if (sortField === 'apdex') {
+                valA = a.apdex?.score ?? 1.0;
+                valB = b.apdex?.score ?? 1.0;
             }
 
             return sortOrder === 'asc' ? valA - valB : valB - valA;
@@ -247,59 +277,79 @@ export default function ApisPage() {
                         <table className="w-full text-left text-xs border-collapse">
                             <thead>
                                 <tr className="border-b border-[#242932] text-zinc-400 text-[11px] uppercase tracking-wider bg-[#0E1014]/60 select-none">
-                                    <th className="py-2.5 px-4 font-semibold w-24">Status</th>
+                                    <th className="py-2.5 px-3 font-semibold w-20">Status</th>
                                     <th 
-                                        className="py-2.5 px-4 font-semibold cursor-pointer hover:text-zinc-200 transition-colors"
+                                        className="py-2.5 px-3 font-semibold cursor-pointer hover:text-zinc-200 transition-colors"
                                         onClick={() => handleSort('endpoint')}
                                     >
                                         Route Path {sortField === 'endpoint' && (sortOrder === 'asc' ? '↑' : '↓')}
                                     </th>
-                                    <th className="py-2.5 px-4 font-semibold">Service</th>
+                                    <th className="py-2.5 px-3 font-semibold">Service</th>
                                     <th 
-                                        className="py-2.5 px-4 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
+                                        className="py-2.5 px-3 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
                                         onClick={() => handleSort('hits')}
                                     >
                                         Requests {sortField === 'hits' && (sortOrder === 'asc' ? '↑' : '↓')}
                                     </th>
                                     <th 
-                                        className="py-2.5 px-4 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
+                                        className="py-2.5 px-3 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
+                                        onClick={() => handleSort('rpm')}
+                                    >
+                                        RPM {sortField === 'rpm' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                    </th>
+                                    <th 
+                                        className="py-2.5 px-3 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
                                         onClick={() => handleSort('errorRate')}
                                     >
                                         Error Rate {sortField === 'errorRate' && (sortOrder === 'asc' ? '↑' : '↓')}
                                     </th>
                                     <th 
-                                        className="py-2.5 px-4 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
+                                        className="py-2.5 px-3 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
                                         onClick={() => handleSort('avgLatency')}
                                     >
-                                        p50 (Avg) {sortField === 'avgLatency' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                        p50 {sortField === 'avgLatency' && (sortOrder === 'asc' ? '↑' : '↓')}
                                     </th>
-                                    <th className="py-2.5 px-4 font-semibold text-right">p95</th>
                                     <th 
-                                        className="py-2.5 px-4 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
+                                        className="py-2.5 px-3 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
+                                        onClick={() => handleSort('p95')}
+                                    >
+                                        p95 {sortField === 'p95' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                    </th>
+                                    <th 
+                                        className="py-2.5 px-3 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
                                         onClick={() => handleSort('maxLatency')}
                                     >
-                                        p99 (Max) {sortField === 'maxLatency' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                        p99 {sortField === 'maxLatency' && (sortOrder === 'asc' ? '↑' : '↓')}
                                     </th>
+                                    <th 
+                                        className="py-2.5 px-3 font-semibold text-right cursor-pointer hover:text-zinc-200 transition-colors"
+                                        onClick={() => handleSort('apdex')}
+                                    >
+                                        Apdex {sortField === 'apdex' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                    </th>
+                                    <th className="py-2.5 px-3 w-8"></th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-[#242932]">
                                 {processedApis.map((api, idx) => {
                                     const errRate = api.errorRate || 0;
-                                    const avgLat = api.avgLatency || 0;
-                                    const maxLat = api.maxLatency || avgLat;
-                                    const p95 = Math.round(avgLat + (maxLat - avgLat) * 0.9);
-                                    const isDegraded = errRate > 5 || avgLat > 400;
+                                    const p50 = Math.round(api.percentiles?.p50 ?? api.avgLatency);
+                                    const p95 = Math.round(api.percentiles?.p95 ?? (api.avgLatency + (api.maxLatency - api.avgLatency) * 0.9));
+                                    const p99 = Math.round(api.percentiles?.p99 ?? api.maxLatency);
+                                    const rpm = api.throughputRpm !== undefined ? api.throughputRpm.toFixed(1) : '-';
+                                    const isDegraded = errRate > 5 || p50 > 400 || (api.apdex?.score !== undefined && api.apdex.score < 0.70);
 
                                     return (
                                         <tr
                                             key={`${api.serviceName}-${api.endpoint}-${api.method}-${idx}`}
-                                            onClick={() => setSelectedRoute(api)}
+                                            onClick={() => router.push(`/dashboard/apis/details?endpoint=${encodeURIComponent(api.endpoint)}&method=${api.method}&service=${encodeURIComponent(api.serviceName)}`)}
                                             className="hover:bg-[#181D24] transition-colors cursor-pointer group"
+                                            title="Click to view dedicated API details"
                                         >
-                                            <td className="py-3 px-4 whitespace-nowrap">
+                                            <td className="py-3 px-3 whitespace-nowrap">
                                                 <StatusBadge status={isDegraded ? 'degraded' : 'healthy'} />
                                             </td>
-                                            <td className="py-3 px-4 font-mono font-medium text-zinc-200 whitespace-nowrap">
+                                            <td className="py-3 px-3 font-mono font-medium text-zinc-200 whitespace-nowrap">
                                                 <span className={`font-bold mr-1.5 text-[11px] ${
                                                     api.method === 'GET' ? 'text-[#4CB8D6]' :
                                                     api.method === 'POST' ? 'text-[#48B982]' :
@@ -311,23 +361,32 @@ export default function ApisPage() {
                                                     {api.endpoint}
                                                 </span>
                                             </td>
-                                            <td className="py-3 px-4 text-zinc-400 whitespace-nowrap">
+                                            <td className="py-3 px-3 text-zinc-400 whitespace-nowrap">
                                                 {api.serviceName}
                                             </td>
-                                            <td className="py-3 px-4 text-right font-mono text-zinc-200">
+                                            <td className="py-3 px-3 text-right font-mono text-zinc-200">
                                                 {api.totalHits}
                                             </td>
-                                            <td className={`py-3 px-4 text-right font-mono font-semibold ${errRate > 0 ? 'text-[#E45865]' : 'text-[#48B982]'}`}>
+                                            <td className="py-3 px-3 text-right font-mono text-zinc-400">
+                                                {rpm}
+                                            </td>
+                                            <td className={`py-3 px-3 text-right font-mono font-semibold ${errRate > 0 ? 'text-[#E45865]' : 'text-[#48B982]'}`}>
                                                 {errRate.toFixed(1)}%
                                             </td>
-                                            <td className="py-3 px-4 text-right font-mono text-zinc-300">
-                                                {Math.round(avgLat)} ms
+                                            <td className="py-3 px-3 text-right font-mono text-zinc-300">
+                                                {p50} ms
                                             </td>
-                                            <td className="py-3 px-4 text-right font-mono text-zinc-400">
+                                            <td className="py-3 px-3 text-right font-mono text-zinc-300">
                                                 {p95} ms
                                             </td>
-                                            <td className="py-3 px-4 text-right font-mono text-zinc-400">
-                                                {Math.round(maxLat)} ms
+                                            <td className="py-3 px-3 text-right font-mono text-zinc-400">
+                                                {p99} ms
+                                            </td>
+                                            <td className="py-3 px-3 text-right">
+                                                {getApdexBadge(api.apdex?.score)}
+                                            </td>
+                                            <td className="py-3 px-3 text-right text-zinc-600 group-hover:text-[#4CB8D6] transition-colors">
+                                                <ChevronRight size={14} />
                                             </td>
                                         </tr>
                                     );
@@ -366,117 +425,6 @@ export default function ApisPage() {
                     </div>
                 )}
             </div>
-
-            {/* Slide-over Route Investigation Drawer */}
-            {selectedRoute && (
-                <Drawer
-                    isOpen={!!selectedRoute}
-                    onClose={() => setSelectedRoute(null)}
-                    title={`${selectedRoute.method} ${selectedRoute.endpoint}`}
-                    description={`Service: ${selectedRoute.serviceName}`}
-                >
-                    <div className="space-y-6">
-                        {/* Status Header */}
-                        <div className="p-3 rounded bg-[#111419] border border-[#242932] flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                                <span className="text-xs text-zinc-400 font-semibold uppercase">Operational Health:</span>
-                                <StatusBadge status={selectedRoute.errorRate > 5 ? 'degraded' : 'healthy'} />
-                            </div>
-                            <span className="text-xs text-zinc-400 font-mono">Service: {selectedRoute.serviceName}</span>
-                        </div>
-
-                        {/* Route Summary KPI metrics */}
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                            <div className="p-3 rounded bg-[#111419] border border-[#242932]">
-                                <span className="text-[10px] text-zinc-400 uppercase font-semibold block">Total Requests</span>
-                                <span className="text-lg font-bold font-mono text-zinc-100 mt-0.5 block">{selectedRoute.totalHits}</span>
-                            </div>
-                            <div className="p-3 rounded bg-[#111419] border border-[#242932]">
-                                <span className="text-[10px] text-zinc-400 uppercase font-semibold block">Error Rate</span>
-                                <span className={`text-lg font-bold font-mono mt-0.5 block ${selectedRoute.errorRate > 0 ? 'text-[#E45865]' : 'text-[#48B982]'}`}>
-                                    {selectedRoute.errorRate.toFixed(1)}%
-                                </span>
-                            </div>
-                            <div className="p-3 rounded bg-[#111419] border border-[#242932]">
-                                <span className="text-[10px] text-zinc-400 uppercase font-semibold block">Avg Latency (p50)</span>
-                                <span className="text-lg font-bold font-mono text-zinc-100 mt-0.5 block">{Math.round(selectedRoute.avgLatency)} ms</span>
-                            </div>
-                            <div className="p-3 rounded bg-[#111419] border border-[#242932]">
-                                <span className="text-[10px] text-zinc-400 uppercase font-semibold block">Max Latency (p99)</span>
-                                <span className="text-lg font-bold font-mono text-zinc-300 mt-0.5 block">{Math.round(selectedRoute.maxLatency)} ms</span>
-                            </div>
-                        </div>
-
-                        {/* HTTP Status Code Breakdown */}
-                        <div className="p-4 rounded bg-[#111419] border border-[#242932] space-y-3">
-                            <h4 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider">
-                                HTTP Status Distribution
-                            </h4>
-                            <StatusBreakdown
-                                successHits={selectedRoute.successHits}
-                                errorHits={selectedRoute.errorHits}
-                            />
-                        </div>
-
-                        {/* Percentile Distribution Breakdown */}
-                        <div className="p-4 rounded bg-[#111419] border border-[#242932] space-y-3">
-                            <h4 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider">
-                                Latency Percentiles
-                            </h4>
-                            <div className="grid grid-cols-3 gap-3 text-center">
-                                <div className="p-2.5 rounded bg-[#0E1014] border border-[#242932]">
-                                    <span className="text-[10px] text-zinc-400 font-semibold uppercase block">p50</span>
-                                    <span className="text-sm font-bold font-mono text-zinc-200 mt-1 block">{Math.round(selectedRoute.avgLatency)} ms</span>
-                                </div>
-                                <div className="p-2.5 rounded bg-[#0E1014] border border-[#242932]">
-                                    <span className="text-[10px] text-zinc-400 font-semibold uppercase block">p95</span>
-                                    <span className="text-sm font-bold font-mono text-zinc-300 mt-1 block">
-                                        {Math.round(selectedRoute.avgLatency + (selectedRoute.maxLatency - selectedRoute.avgLatency) * 0.9)} ms
-                                    </span>
-                                </div>
-                                <div className="p-2.5 rounded bg-[#0E1014] border border-[#242932]">
-                                    <span className="text-[10px] text-zinc-400 font-semibold uppercase block">p99</span>
-                                    <span className="text-sm font-bold font-mono text-zinc-300 mt-1 block">{Math.round(selectedRoute.maxLatency)} ms</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Trace Investigation List */}
-                        <div className="space-y-2">
-                            <h4 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider">
-                                Recent Diagnostic Events
-                            </h4>
-                            <div className="border border-[#242932] rounded overflow-hidden text-xs">
-                                <table className="w-full text-left">
-                                    <thead className="bg-[#0E1014] text-zinc-400 text-[10px] uppercase font-semibold border-b border-[#242932]">
-                                        <tr>
-                                            <th className="p-2">Status</th>
-                                            <th className="p-2">Latency</th>
-                                            <th className="p-2 font-mono">Trace ID</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-[#242932] font-mono text-[11px]">
-                                        {selectedRoute.errorHits > 0 && (
-                                            <tr className="bg-[#E45865]/5">
-                                                <td className="p-2 text-[#E45865] font-bold">500 Internal Error</td>
-                                                <td className="p-2 text-zinc-300">{Math.round(selectedRoute.maxLatency)} ms</td>
-                                                <td className="p-2 text-zinc-500">tr_c9a18f40b</td>
-                                            </tr>
-                                        )}
-                                        {selectedRoute.successHits > 0 && (
-                                            <tr>
-                                                <td className="p-2 text-[#48B982] font-bold">200 OK</td>
-                                                <td className="p-2 text-zinc-300">{Math.round(selectedRoute.avgLatency)} ms</td>
-                                                <td className="p-2 text-zinc-500">tr_e27b140df</td>
-                                            </tr>
-                                        )}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </Drawer>
-            )}
         </div>
     );
 }

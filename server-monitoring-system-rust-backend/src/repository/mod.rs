@@ -7,4 +7,5 @@ pub mod api_hit_repo;
 pub mod api_key_repo;
 pub mod client_repo;
 pub mod metrics_repo;
+pub mod tenant_config_repo;
 pub mod user_repo;

@@ -18,6 +18,7 @@ import {
     Building,
     LogOut,
     Radio,
+    Sliders,
 } from 'lucide-react';
 
 interface NavItem {
@@ -61,6 +62,7 @@ const clientNavSections: NavSection[] = [
     {
         section: "CONFIGURE",
         items: [
+            { title: "Client Config", href: "/dashboard/client-config", icon: Sliders },
             { title: "Integrations", href: "/dashboard/integrations", icon: Boxes, badge: "Upcoming", disabled: true },
             { title: "Settings", href: "/dashboard/settings", icon: Settings },
         ]
@@ -78,6 +80,7 @@ const superAdminNavSections: NavSection[] = [
     {
         section: "CONFIGURE",
         items: [
+            { title: "Client Config", href: "/dashboard/client-config", icon: Sliders },
             { title: "Settings", href: "/dashboard/settings", icon: Settings },
         ]
     }

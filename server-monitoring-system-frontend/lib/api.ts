@@ -113,6 +113,61 @@ export interface TopEndpoint {
     errorRate: number;
 }
 
+export interface LatencyPercentiles {
+    p50: number;
+    p75: number;
+    p90: number;
+    p95: number;
+    p99: number;
+}
+
+export interface StatusDistribution {
+    status_1xx: number;
+    status_2xx: number;
+    status_3xx: number;
+    status_4xx: number;
+    status_5xx: number;
+}
+
+export interface ApdexScore {
+    score: number;
+    satisfied: number;
+    tolerating: number;
+    frustrated: number;
+}
+
+export interface HistogramProfile {
+    name: string;
+    description: string;
+    bucketBounds: number[];
+}
+
+export interface TenantConfig {
+    clientId: string;
+    apdexThresholdMs: number;
+    histogramProfile: HistogramProfile;
+    dataRetentionDays: number;
+    dailyIngestQuota?: number | null;
+}
+
+export interface TenantConfigUpdate {
+    apdexThresholdMs?: number;
+    histogramProfile?: string;
+    dataRetentionDays?: number;
+    dailyIngestQuota?: number | null;
+}
+
+export interface EndpointMetricsResponse {
+    percentiles: LatencyPercentiles;
+    statusDistribution: StatusDistribution;
+    apdex: ApdexScore;
+    throughputRpm: number;
+    timeRange: {
+        start: string;
+        end: string;
+    };
+}
+
 export interface ApiMetricsEntry {
     serviceName: string;
     endpoint: string;
@@ -124,6 +179,10 @@ export interface ApiMetricsEntry {
     avgLatency: number;
     minLatency: number;
     maxLatency: number;
+    percentiles?: LatencyPercentiles;
+    statusDistribution?: StatusDistribution;
+    apdex?: ApdexScore;
+    throughputRpm?: number;
 }
 
 export interface RecentActivity {
@@ -248,6 +307,40 @@ function normalizeApiKey(raw: Record<string, unknown> | null | undefined): ApiKe
         },
         createdBy: raw.createdBy ? String(raw.createdBy) : (raw.created_by ? String(raw.created_by) : undefined),
         expiresAt: raw.expiresAt ? String(raw.expiresAt) : (raw.expires_at ? String(raw.expires_at) : undefined),
+    };
+}
+
+export function normalizeHistogramProfile(raw: any): HistogramProfile {
+    if (!raw) {
+        return {
+            name: 'standard',
+            description: '23-bucket general-purpose profile',
+            bucketBounds: [10, 25, 50, 75, 100, 150, 200, 250, 300, 400, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000, 7500, 10000, 15000, 30000, 60000],
+        };
+    }
+    return {
+        name: raw.name || raw.profile_name || 'standard',
+        description: raw.description || '',
+        bucketBounds: raw.bucketBounds || raw.bucket_bounds || raw.profile_bounds || [],
+    };
+}
+
+export function normalizeTenantConfig(raw: any): TenantConfig {
+    if (!raw) {
+        return {
+            clientId: '',
+            apdexThresholdMs: 500,
+            histogramProfile: normalizeHistogramProfile(null),
+            dataRetentionDays: 90,
+            dailyIngestQuota: null,
+        };
+    }
+    return {
+        clientId: raw.clientId || raw.client_id || '',
+        apdexThresholdMs: raw.apdexThresholdMs ?? raw.apdex_threshold_ms ?? 500,
+        histogramProfile: normalizeHistogramProfile(raw.histogramProfile || raw.histogram_profile),
+        dataRetentionDays: raw.dataRetentionDays ?? raw.data_retention_days ?? 90,
+        dailyIngestQuota: raw.dailyIngestQuota !== undefined ? raw.dailyIngestQuota : (raw.daily_ingest_quota !== undefined ? raw.daily_ingest_quota : null),
     };
 }
 
@@ -377,6 +470,17 @@ export const analyticsApi = {
             },
         };
     },
+    getEndpointMetrics: async (params: {
+        serviceName: string;
+        endpoint: string;
+        method: string;
+        startTime?: string;
+        endTime?: string;
+        clientId?: string;
+    }): Promise<EndpointMetricsResponse> => {
+        const response = await api.get('/analytics/percentiles', { params });
+        return response.data?.data ?? response.data;
+    },
 };
 
 export const clientApi = {
@@ -466,7 +570,32 @@ export const clientApi = {
         const response = await api.get(`/admin/clients/${clientId}/api/keys/${keyId}`);
         const raw = response.data?.data ?? response.data;
         return normalizeApiKey(raw);
-    }
+    },
+    getTenantConfig: async (clientId: string): Promise<TenantConfig> => {
+        const response = await api.get(`/admin/clients/${clientId}/config`);
+        const raw = response.data?.data ?? response.data;
+        return normalizeTenantConfig(raw);
+    },
+    updateTenantConfig: async (clientId: string, data: TenantConfigUpdate): Promise<TenantConfig> => {
+        const response = await api.put(`/admin/clients/${clientId}/config`, data);
+        const raw = response.data?.data ?? response.data;
+        return normalizeTenantConfig(raw);
+    },
+    getCurrentTenantConfig: async (): Promise<TenantConfig> => {
+        const response = await api.get('/client/config');
+        const raw = response.data?.data ?? response.data;
+        return normalizeTenantConfig(raw);
+    },
+    updateCurrentTenantConfig: async (data: TenantConfigUpdate): Promise<TenantConfig> => {
+        const response = await api.put('/client/config', data);
+        const raw = response.data?.data ?? response.data;
+        return normalizeTenantConfig(raw);
+    },
+    getHistogramProfiles: async (): Promise<HistogramProfile[]> => {
+        const response = await api.get('/admin/histogram-profiles');
+        const raw = response.data?.data ?? response.data ?? [];
+        return Array.isArray(raw) ? raw.map(normalizeHistogramProfile) : [];
+    },
 };
 
 export default api;

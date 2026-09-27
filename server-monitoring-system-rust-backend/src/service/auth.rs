@@ -281,12 +281,18 @@ impl AuthService {
         let expires_in = self.parse_expires_in(&self.config.jwt.expires_in);
         let exp = now + expires_in;
 
+        let is_super_admin    = user.role == Role::SuperAdmin;
+        let can_view_analytics = is_super_admin
+            || user.permissions.as_ref().map(|p| p.can_view_analytics).unwrap_or(false);
+
         let claims = JwtClaims {
             user_id,
-            email: user.email.clone(),
-            username: user.username.clone(),
-            role: user.role.to_string(),
-            client_id: user.client_id.clone(),
+            email:              user.email.clone(),
+            username:           user.username.clone(),
+            role:               user.role.to_string(),
+            client_id:          user.client_id.clone(),
+            is_super_admin,
+            can_view_analytics,
             iat: now.timestamp(),
             exp: exp.timestamp(),
         };
@@ -301,18 +307,42 @@ impl AuthService {
     }
 
     /// Parse JWT expires_in string to Duration.
+    ///
+    /// Supported formats: `24h`, `7d`, `90m`.
+    /// Falls back to 24 hours on unrecognised input and emits a `WARN` log so
+    /// that misconfigured `JWT_EXPIRES_IN` values are visible in production.
     fn parse_expires_in(&self, expires_in: &str) -> Duration {
         if expires_in.ends_with('h') {
-            let hours: i64 = expires_in.trim_end_matches('h').parse().unwrap_or(24);
-            Duration::hours(hours)
+            match expires_in.trim_end_matches('h').parse::<i64>() {
+                Ok(hours) => return Duration::hours(hours),
+                Err(_) => tracing::warn!(
+                    value = %expires_in,
+                    "JWT_EXPIRES_IN has invalid numeric part (expected e.g. '24h'); defaulting to 24 h"
+                ),
+            }
         } else if expires_in.ends_with('d') {
-            let days: i64 = expires_in.trim_end_matches('d').parse().unwrap_or(1);
-            Duration::days(days)
+            match expires_in.trim_end_matches('d').parse::<i64>() {
+                Ok(days) => return Duration::days(days),
+                Err(_) => tracing::warn!(
+                    value = %expires_in,
+                    "JWT_EXPIRES_IN has invalid numeric part (expected e.g. '7d'); defaulting to 24 h"
+                ),
+            }
         } else if expires_in.ends_with('m') {
-            let minutes: i64 = expires_in.trim_end_matches('m').parse().unwrap_or(60);
-            Duration::minutes(minutes)
+            match expires_in.trim_end_matches('m').parse::<i64>() {
+                Ok(minutes) => return Duration::minutes(minutes),
+                Err(_) => tracing::warn!(
+                    value = %expires_in,
+                    "JWT_EXPIRES_IN has invalid numeric part (expected e.g. '60m'); defaulting to 24 h"
+                ),
+            }
         } else {
-            Duration::hours(24)
+            tracing::warn!(
+                value = %expires_in,
+                "JWT_EXPIRES_IN has unrecognised format (expected h/d/m suffix, e.g. '24h'); defaulting to 24 h"
+            );
         }
+        Duration::hours(24)
     }
 }
+

@@ -18,9 +18,12 @@ import {
     Search,
     RefreshCw,
     Loader2,
-    ExternalLink
+    ExternalLink,
+    Sliders
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { ClientCompany } from '@/lib/api';
+import { TenantConfigModal } from '@/components/tenants/tenant-config-modal';
 
 export default function TenantsPage() {
     const toast = useToast();
@@ -33,6 +36,7 @@ export default function TenantsPage() {
     }
 
     const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
+    const [configTenant, setConfigTenant] = useState<ClientCompany | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -259,6 +263,16 @@ export default function TenantsPage() {
                                                     {copiedId === t.id ? <Check size={12} className="text-[#48B982]" /> : <Copy size={12} />}
                                                     Copy ID
                                                 </Button>
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => setConfigTenant(t)}
+                                                    className="h-7 px-2 text-xs gap-1 cursor-pointer hover:border-[#48B982] hover:text-[#48B982]"
+                                                    title="Configure Apdex, histogram profile, retention, and ingest quota"
+                                                >
+                                                    <Sliders size={12} />
+                                                    Config
+                                                </Button>
                                                 <Link href={`/dashboard/tenants/users?clientId=${t.id}`}>
                                                     <Button
                                                         variant="secondary"
@@ -359,6 +373,16 @@ export default function TenantsPage() {
                     </div>
                 </form>
             </Modal>
+
+            {/* Tenant Telemetry Configuration Modal */}
+            {configTenant && (
+                <TenantConfigModal
+                    isOpen={!!configTenant}
+                    onClose={() => setConfigTenant(null)}
+                    clientId={configTenant.id}
+                    clientName={configTenant.name}
+                />
+            )}
         </div>
     );
 }

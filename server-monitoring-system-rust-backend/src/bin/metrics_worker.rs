@@ -6,9 +6,11 @@ use server_monitoring::config::settings::AppConfig;
 use server_monitoring::config::telemetry;
 use server_monitoring::messaging::metrics_consumer::MetricsConsumer;
 use server_monitoring::repository::metrics_repo::SeaOrmMetricsRepository;
+use server_monitoring::repository::tenant_config_repo::SeaOrmTenantConfigRepository;
 use server_monitoring::resilience::circuit_breaker::CircuitBreaker;
 use server_monitoring::resilience::retry::RetryStrategy;
 use server_monitoring::service::metrics_processor::MetricsProcessorService;
+
 
 #[tokio::main]
 async fn main() {
@@ -113,8 +115,14 @@ async fn start_metrics_worker(
     let channel = rmq_conn.connect().await?;
 
     // Repository and service.
-    let metrics_repo = Arc::new(SeaOrmMetricsRepository::new(pg_db));
-    let metrics_processor = Arc::new(MetricsProcessorService::new(metrics_repo));
+    let metrics_repo          = Arc::new(SeaOrmMetricsRepository::new(pg_db.clone()));
+    let tenant_config_repo    = Arc::new(SeaOrmTenantConfigRepository::new(pg_db));
+    let metrics_processor     = Arc::new(MetricsProcessorService::new(
+        metrics_repo,
+        tenant_config_repo,
+        config.ingest.dedup_retention_days,
+    ));
+
 
     // Resilience primitives.
     let circuit_breaker = Arc::new(CircuitBreaker::new(

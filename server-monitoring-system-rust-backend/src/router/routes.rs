@@ -14,7 +14,10 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &AppConfig) {
         .route("/", web::get().to(health::root));
 
     // ── Ingest routes (API-key-protected, no JWT) ────────────────────────────
-    cfg.service(web::scope("/api/hit").route("", web::post().to(ingest::ingest_hit)));
+    cfg.route("/api/hit",  web::post().to(ingest::ingest_hit))
+        .route("/api/hits", web::post().to(ingest::ingest_batch));
+
+
 
     // ── Auth routes ─────────────────────────────────────────────────────────
     cfg.service(
@@ -48,9 +51,12 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &AppConfig) {
     cfg.service(
         web::scope("/api/analytics")
             .wrap(Authenticate::new(config))
-            .route("/stats", web::get().to(analytics::get_stats))
-            .route("/dashboard", web::get().to(analytics::get_dashboard))
-            .route("/apis", web::get().to(analytics::get_apis_metrics)),
+            .route("/stats",       web::get().to(analytics::get_stats))
+            .route("/dashboard",   web::get().to(analytics::get_dashboard))
+            .route("/apis",        web::get().to(analytics::get_endpoint_list))
+            .route("/percentiles", web::get().to(analytics::get_endpoint_metrics))
+            .route("/services",    web::get().to(analytics::get_services)),
+
     );
 
     // ── Admin / Client management routes (all require JWT) ──────────────────
@@ -108,6 +114,26 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &AppConfig) {
             .route(
                 "/admin/clients/{client_id}/api/keys/{key_id}",
                 web::get().to(client::get_api_key),
+            )
+            .route(
+                "/admin/clients/{clientId}/config",
+                web::get().to(client::get_client_config),
+            )
+            .route(
+                "/admin/clients/{clientId}/config",
+                web::put().to(client::update_client_config),
+            )
+            .route(
+                "/admin/histogram-profiles",
+                web::get().to(client::list_histogram_profiles),
+            )
+            .route(
+                "/client/config",
+                web::get().to(client::get_current_client_config),
+            )
+            .route(
+                "/client/config",
+                web::put().to(client::update_current_client_config),
             ),
             // .route(
             //     "/hit",

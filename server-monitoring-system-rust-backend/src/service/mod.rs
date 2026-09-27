@@ -9,3 +9,4 @@ pub mod client;
 pub mod ingest;
 pub mod metrics_processor;
 pub mod processor;
+pub mod tenant_config;

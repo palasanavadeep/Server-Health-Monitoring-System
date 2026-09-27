@@ -58,6 +58,9 @@ pub struct UserPermissions {
 }
 
 /// JWT claims payload embedded in authentication tokens.
+///
+/// Permission flags are embedded at login time to eliminate the DB round-trip
+/// that would otherwise be required on every analytics request to check role/permissions.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JwtClaims {
@@ -67,6 +70,12 @@ pub struct JwtClaims {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    /// True when role == SuperAdmin. Checked in analytics handlers without a DB call.
+    #[serde(default)]
+    pub is_super_admin: bool,
+    /// True when the user has analytics view permission. Eliminates the get_profile() DB call.
+    #[serde(default)]
+    pub can_view_analytics: bool,
     pub iat: i64,
     pub exp: i64,
 }

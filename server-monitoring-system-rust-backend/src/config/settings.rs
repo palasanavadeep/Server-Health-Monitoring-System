@@ -37,6 +37,19 @@ const DEFAULT_CONSUMER_DB_CONNECT_MAX_RETRIES: u32 = 5;
 const DEFAULT_CONSUMER_GRACEFUL_SHUTDOWN_SECS: u64 = 2;
 const DEFAULT_CONSUMER_IDEMPOTENCY_CACHE_SIZE: usize = 100_000;
 
+// API key cache defaults
+const DEFAULT_API_KEY_CACHE_TTL_SECS: u64 = 60;       // 60 s — short for security
+const DEFAULT_API_KEY_CACHE_MAX_CAPACITY: u64 = 10_000;
+
+// Tenant config cache defaults
+const DEFAULT_TENANT_CONFIG_CACHE_TTL_SECS: u64 = 60;
+const DEFAULT_TENANT_CONFIG_CACHE_MAX_CAPACITY: u64 = 5_000;
+
+// Ingest defaults
+const DEFAULT_METRIC_EVENT_DEDUP_RETENTION_DAYS: i64 = 90;
+const DEFAULT_BATCH_INGEST_MAX_EVENTS: usize = 500;
+
+
 // ── Config structs ─────────────────────────────────────────────────────────────
 
 /// Application configuration loaded from environment variables.
@@ -59,6 +72,9 @@ pub struct AppConfig {
     pub resilience: ResilienceConfig,
     pub consumer: ConsumerConfig,
     pub password_policy: PasswordPolicyConfig,
+    pub api_key_cache: ApiKeyCacheConfig,
+    pub tenant_config_cache: TenantConfigCacheConfig,
+    pub ingest: IngestConfig,
 
     /// Legacy API key list (kept for backward compatibility).
     pub valid_api_keys: Vec<String>,
@@ -183,6 +199,40 @@ pub struct ConsumerConfig {
     pub idempotency_cache_size: usize,
 }
 
+/// In-process API key validation cache settings.
+///
+/// Short TTL (60 s default) is intentional — provides a security boundary so
+/// revoked keys become invalid within at most one TTL window per instance.
+#[derive(Debug, Clone)]
+pub struct ApiKeyCacheConfig {
+    /// Env: `API_KEY_CACHE_TTL_SECS` (default: 60)
+    pub ttl_secs: u64,
+    /// Env: `API_KEY_CACHE_MAX_CAPACITY` (default: 10_000)
+    pub max_capacity: u64,
+}
+
+/// In-process tenant config cache settings.
+#[derive(Debug, Clone)]
+pub struct TenantConfigCacheConfig {
+    /// Env: `TENANT_CONFIG_CACHE_TTL_SECS` (default: 60)
+    pub ttl_secs: u64,
+    /// Env: `TENANT_CONFIG_CACHE_MAX_CAPACITY` (default: 5_000)
+    pub max_capacity: u64,
+}
+
+/// Ingest pipeline settings.
+#[derive(Debug, Clone)]
+pub struct IngestConfig {
+    /// Days to retain `processed_metric_events` rows for deduplication.
+    /// Must exceed the maximum possible RabbitMQ message replay window.
+    /// Env: `METRIC_EVENT_DEDUP_RETENTION_DAYS` (default: 90)
+    pub dedup_retention_days: i64,
+
+    /// Maximum number of events accepted in a single `POST /api/hits` batch.
+    /// Env: `BATCH_INGEST_MAX_EVENTS` (default: 500)
+    pub batch_max_events: usize,
+}
+
 // ── Loader ─────────────────────────────────────────────────────────────────────
 
 impl AppConfig {
@@ -290,6 +340,21 @@ impl AppConfig {
                 require_lowercase: env_flag_or("PASSWORD_REQUIRE_LOWERCASE", true),
                 require_numbers: env_flag_or("PASSWORD_REQUIRE_NUMBERS", true),
                 require_symbols: env_flag_or("PASSWORD_REQUIRE_SYMBOLS", true),
+            },
+
+            api_key_cache: ApiKeyCacheConfig {
+                ttl_secs:     parse_env("API_KEY_CACHE_TTL_SECS",     DEFAULT_API_KEY_CACHE_TTL_SECS),
+                max_capacity: parse_env("API_KEY_CACHE_MAX_CAPACITY", DEFAULT_API_KEY_CACHE_MAX_CAPACITY),
+            },
+
+            tenant_config_cache: TenantConfigCacheConfig {
+                ttl_secs:     parse_env("TENANT_CONFIG_CACHE_TTL_SECS",     DEFAULT_TENANT_CONFIG_CACHE_TTL_SECS),
+                max_capacity: parse_env("TENANT_CONFIG_CACHE_MAX_CAPACITY", DEFAULT_TENANT_CONFIG_CACHE_MAX_CAPACITY),
+            },
+
+            ingest: IngestConfig {
+                dedup_retention_days: parse_env("METRIC_EVENT_DEDUP_RETENTION_DAYS", DEFAULT_METRIC_EVENT_DEDUP_RETENTION_DAYS),
+                batch_max_events:     parse_env("BATCH_INGEST_MAX_EVENTS",            DEFAULT_BATCH_INGEST_MAX_EVENTS),
             },
 
             valid_api_keys: env::var("VALID_API_KEYS")

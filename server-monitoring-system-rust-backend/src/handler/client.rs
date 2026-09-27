@@ -1,6 +1,8 @@
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse};
 
 use crate::app_state::AppState;
+use crate::domain::role::Role;
+use crate::domain::tenant_config::TenantConfigUpdate;
 use crate::dto::request::client::{
     CreateApiKeyRequest, CreateClientRequest, CreateClientUserRequest, RotateApiKeyRequest,
     UpdateApiKeyRequest,
@@ -391,3 +393,154 @@ pub async fn get_api_key(
         Err(e) => e.to_response(),
     }
 }
+
+#[derive(serde::Deserialize)]
+pub struct ClientIdParam {
+    #[serde(alias = "clientId")]
+    pub client_id: String,
+}
+
+/// GET /api/admin/clients/{clientId}/config
+pub async fn get_client_config(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<ClientIdParam>,
+) -> HttpResponse {
+    let user = require_user!(&req);
+    let params = path.into_inner();
+
+    let is_super_admin = match state.auth_service.check_super_admin_permissions(&user.user_id).await {
+        Ok(b) => b,
+        Err(e) => return e.to_response(),
+    };
+
+    if !is_super_admin {
+        match &user.client_id {
+            Some(cid) if cid == &params.client_id => {}
+            _ => return HttpResponse::Forbidden().json(ResponseFormatter::forbidden("Access denied")),
+        }
+    }
+
+    match state.tenant_config_service.get_config(&params.client_id).await {
+        Ok(config) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            config.as_ref(),
+            "Tenant config retrieved successfully",
+        )),
+        Err(e) => e.to_response(),
+    }
+}
+
+/// PUT /api/admin/clients/{clientId}/config
+pub async fn update_client_config(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<ClientIdParam>,
+    body: web::Json<TenantConfigUpdate>,
+) -> HttpResponse {
+    let user = require_user!(&req);
+    let params = path.into_inner();
+
+    let is_super_admin = match state.auth_service.check_super_admin_permissions(&user.user_id).await {
+        Ok(b) => b,
+        Err(e) => return e.to_response(),
+    };
+
+    if !is_super_admin {
+        if user.role != Role::ClientAdmin.as_str() {
+            return HttpResponse::Forbidden().json(ResponseFormatter::forbidden(
+                "Only super admins and client admins can update configuration",
+            ));
+        }
+        match &user.client_id {
+            Some(cid) if cid == &params.client_id => {}
+            _ => {
+                return HttpResponse::Forbidden().json(ResponseFormatter::forbidden(
+                    "Access denied: You can only update your own client configuration",
+                ))
+            }
+        }
+    }
+
+    match state.tenant_config_service.update_config(&params.client_id, &body.into_inner()).await {
+        Ok(()) => {
+            match state.tenant_config_service.get_config(&params.client_id).await {
+                Ok(cfg) => HttpResponse::Ok().json(ResponseFormatter::ok(
+                    cfg.as_ref(),
+                    "Tenant config updated successfully",
+                )),
+                Err(e) => e.to_response(),
+            }
+        }
+        Err(e) => e.to_response(),
+    }
+}
+
+/// GET /api/client/config
+pub async fn get_current_client_config(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+) -> HttpResponse {
+    let user = require_user!(&req);
+    let client_id = match &user.client_id {
+        Some(cid) => cid,
+        None => return HttpResponse::Forbidden().json(ResponseFormatter::forbidden("No client associated with user")),
+    };
+
+    match state.tenant_config_service.get_config(client_id).await {
+        Ok(config) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            config.as_ref(),
+            "Tenant config retrieved successfully",
+        )),
+        Err(e) => e.to_response(),
+    }
+}
+
+/// PUT /api/client/config
+pub async fn update_current_client_config(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    body: web::Json<TenantConfigUpdate>,
+) -> HttpResponse {
+    let user = require_user!(&req);
+
+    if user.role != Role::SuperAdmin.as_str() && user.role != Role::ClientAdmin.as_str() {
+        return HttpResponse::Forbidden().json(ResponseFormatter::forbidden(
+            "Only super admins and client admins can update configuration",
+        ));
+    }
+
+    let client_id = match &user.client_id {
+        Some(cid) => cid,
+        None => return HttpResponse::Forbidden().json(ResponseFormatter::forbidden("No client associated with user")),
+    };
+
+    match state.tenant_config_service.update_config(client_id, &body.into_inner()).await {
+        Ok(()) => {
+            match state.tenant_config_service.get_config(client_id).await {
+                Ok(cfg) => HttpResponse::Ok().json(ResponseFormatter::ok(
+                    cfg.as_ref(),
+                    "Tenant config updated successfully",
+                )),
+                Err(e) => e.to_response(),
+            }
+        }
+        Err(e) => e.to_response(),
+    }
+}
+
+/// GET /api/admin/histogram-profiles
+pub async fn list_histogram_profiles(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+) -> HttpResponse {
+    let _user = require_user!(&req);
+
+    match state.tenant_config_service.list_profiles().await {
+        Ok(profiles) => HttpResponse::Ok().json(ResponseFormatter::ok(
+            profiles,
+            "Histogram profiles retrieved successfully",
+        )),
+        Err(e) => e.to_response(),
+    }
+}
+
